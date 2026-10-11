@@ -13,5 +13,12 @@ if errorlevel 1 (
   echo CONFIG FAILED
   exit /b 1
 )
+REM XenonRecomp hardcodes the indirect-call table address in ppc_context.h.
+REM Redirect it to the runtime table before compiling. Idempotent.
+python "%REPO%\tools\patch_ppc_context.py" "%REPO%\build\ppc\ppc_context.h"
+if errorlevel 1 (
+  echo PATCH FAILED
+  exit /b 1
+)
 cmake --build "%REPO%\build\cod3" --config Release -j %COD3_JOBS%
 exit /b %ERRORLEVEL%

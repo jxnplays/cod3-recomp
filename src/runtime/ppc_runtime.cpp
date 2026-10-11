@@ -106,6 +106,39 @@ static void cod3_unresolved_indirect_report(PPCContext& ctx, uint8_t* base)
 
 PPCFunc* cod3_unresolved_indirect_target = cod3_unresolved_indirect_report;
 
+// Resolve a guest address through the indirect-call table.
+//
+// This replaces XenonRecomp's PPC_LOOKUP_FUNC, which hardcodes the table at
+// PPC_IMAGE_BASE + PPC_IMAGE_SIZE (0x82C30000) - an address inside the PE image,
+// where the runtime cannot place a table. The slot arithmetic is identical to
+// what the macro performs; only the base address differs.
+//
+// The table is populated during cod3_load_image(). If it is not ready yet, fall
+// back to the reporting trap rather than jumping through a null pointer.
+PPCFunc* cod3_lookup_indirect(uint32_t guest)
+{
+    const uintptr_t tableHost =
+        static_cast<uintptr_t>(g_indirect_table_base);
+    const size_t tableSize = g_indirect_table_size;
+
+    if (tableHost == 0 || tableSize < sizeof(void*))
+        return cod3_unresolved_indirect_target;
+
+    // A slot lives at byte offset (guest - CODE_BASE) * 2. Guest functions are
+    // 4-byte aligned, so real slots are 8-byte aligned.
+    if (guest < kCodeBase)
+        return cod3_unresolved_indirect_target;
+
+    const size_t offset =
+        (static_cast<size_t>(guest - kCodeBase)) * 2;
+
+    if (offset + sizeof(void*) > tableSize)
+        return cod3_unresolved_indirect_target;
+
+    PPCFunc* fn = *reinterpret_cast<PPCFunc**>(tableHost + offset);
+    return fn != nullptr ? fn : cod3_unresolved_indirect_target;
+}
+
 // -----------------------------------------------------------------------------
 // Runtime service addresses
 // -----------------------------------------------------------------------------
@@ -513,6 +546,14 @@ bool cod3_load_image(const char* xex_path)
     // The lookup offsets by (guest - CODE_BASE) * 2 BYTES, and guest addresses
     // span PPC_CODE_SIZE, so the table is PPC_CODE_SIZE * 2 bytes plus one slot
     // for the boundary.
+    // The recompiled code addresses the table through a macro that was expanded at
+    // translation time and hardcodes its location as
+    // PPC_IMAGE_BASE + PPC_IMAGE_SIZE, i.e. 0x82C30000. That address falls
+    // inside the PE image (.reloc), so the table cannot simply be moved there.
+    // Instead PPC_CALL_INDIRECT_FUNC is overridden at compile time - see
+    // src/runtime/cod3_indirect_override.h - so the generated code asks the
+    // runtime where the table actually is. This placement is the one the
+    // override reports.
     const size_t indirectTableBase = kGuestImageBase + image_extent;
     const uint32_t codeBase = kCodeBase;
     const uint32_t codeSize = kCodeSize;

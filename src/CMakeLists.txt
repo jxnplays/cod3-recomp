@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 #  COD3 Recomp - build for the host executable and the recompiled game code
 #
 #  Produces COD3.exe plus the recompiled_call_of_duty_3 library that contains
@@ -98,6 +98,7 @@ target_include_directories(recompiled_call_of_duty_3
 
 target_compile_definitions(recompiled_call_of_duty_3
     PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+
 
 # The XEX loader (Xex2LoadImage) is built as part of XenonUtils so that the
 # runtime parses the executable exactly the way XenonRecomp did.
