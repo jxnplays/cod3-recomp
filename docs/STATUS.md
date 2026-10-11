@@ -378,6 +378,38 @@ independent task to go and locate the shaders in the image.
 This is the first point in the project where the graphics work has a defined,
 enumerable surface to attack rather than a guess about where rendering happens.
 
+#### Three allocation-signature bugs found by refusing nonsense sizes
+
+A guard added to `cod3_heap_alloc` refuses a byte count that lands inside the
+guest's own address space, and names the caller. It immediately found three
+distinct problems, which is the argument for having it: a guard that reports
+what it refuses is worth more than one that silently succeeds.
+
+**1. `ExAllocatePoolWithTag` / `ExAllocatePoolTypeWithTag` read the pool type as
+the size.** The Xbox signatures are `(poolType, bytes, tag[, flags])`, so `r3` is
+the type and `r4` is the size. Both read `r3`. `ExAllocatePool` was already
+correct — which is why the inconsistency survived. This is the same class of
+error as the `Vd*`/`Xam*` signatures: written from an assumed shape rather than
+read off the call sites.
+
+**2. The heap grow method read `r3` as a size.** It is a pointer. Passing it
+through produced a 2,623,216,044-byte request, and that address lies inside the
+very region the block walk was walking. The earlier one-page floor guarded only
+small values; a large one sailed straight through. It now allocates one page and
+says why.
+
+**3. Thread stack allocation is receiving an address as `stackSize`.** Tag `STK`,
+values `0x82738F00`, `0x82738F1C`, `0x82738F38`, `0x82738F54` — a 28-byte stride,
+i.e. a table of stack descriptors being indexed — plus `0x9C5B19AC` from the heap.
+Both `ExCreateThread` (`r8`) and `KeCreateThread` (`r5`) already read the
+documented register, so **the signature is still wrong somewhere and has not been
+established**. The next step is to read the register setup at the call sites, not
+to assume a third shape.
+
+That last one matters more than it looks: no guest thread can start until a stack
+exists, and every `ExCreateThread` and `KeCreateThread` currently fails to
+allocate one.
+
 #### What to do next
 
 Two things, in order.

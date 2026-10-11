@@ -107,6 +107,37 @@ void* cod3_heap_alloc(uint32_t bytes, uint32_t tag)
     if (bytes == 0)
         bytes = 4;
 
+    // A byte count inside the guest's own address space is not a byte count.
+    // The guest image is mapped at its real address and the heap is a guest
+    // range, so a value landing in either is a POINTER that reached the
+    // allocator in the size position - the signature bugs that produced the
+    // 2,188,611,328 and 2,623,216,044 byte requests did exactly this.
+    //
+    // Honouring such a value can only fail: it asks for gigabytes. Refusing it
+    // with a named diagnostic points at the caller instead.
+    if (bytes >= kGuestImageBase && bytes < kGuestImageBase + 0x10000000ull)
+    {
+        std::fprintf(stderr,
+            "[cod3] cod3_heap_alloc: 0x%08X is a guest IMAGE address, not a "
+            "size - refusing (tag '%c%c%c%c')\n",
+            bytes,
+            (char)(tag >> 24) & 0x7F, (char)(tag >> 16) & 0x7F,
+            (char)(tag >> 8) & 0x7F, (char)tag & 0x7F);
+        return nullptr;
+    }
+
+    if (bytes >= g_guest_heap_base &&
+        bytes < g_guest_heap_base + g_guest_heap_size)
+    {
+        std::fprintf(stderr,
+            "[cod3] cod3_heap_alloc: 0x%08X is a guest HEAP address, not a "
+            "size - refusing (tag '%c%c%c%c')\n",
+            bytes,
+            (char)(tag >> 24) & 0x7F, (char)(tag >> 16) & 0x7F,
+            (char)(tag >> 8) & 0x7F, (char)tag & 0x7F);
+        return nullptr;
+    }
+
     if (g_heap_ptr == nullptr)
     {
         std::fprintf(stderr,

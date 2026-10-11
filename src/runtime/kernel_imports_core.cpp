@@ -131,16 +131,22 @@ PPC_FUNC(__imp__ExAllocatePool)
 
 PPC_FUNC(__imp__ExAllocatePoolWithTag)
 {
-    const uint32_t bytes = ctx.r3.u32;
-    const uint32_t tag = ctx.r4.u32;
+    // r3 is the POOL TYPE. The size is r4. Reading r3 gave a byte count of 0, 1
+    // or 2, which is not a defect the allocator could detect - the allocation
+    // simply succeeded and was far too small.
+    (void)ctx.r3.u32;
+    const uint32_t bytes = ctx.r4.u32;
+    const uint32_t tag = GUEST_ARG_U32(ctx, 2);
     ctx.r3.u64 = (uint64_t)(uintptr_t)cod3_pool_alloc(bytes, tag, 0);
 }
 
 PPC_FUNC(__imp__ExAllocatePoolTypeWithTag)
 {
-    const uint32_t bytes = ctx.r3.u32;
-    const uint32_t tag = ctx.r4.u32;
-    const uint32_t flags = ctx.r5.u32;
+    // Same shape as above: pool type, size, tag, flags.
+    (void)ctx.r3.u32;
+    const uint32_t bytes = ctx.r4.u32;
+    const uint32_t tag = GUEST_ARG_U32(ctx, 2);
+    const uint32_t flags = GUEST_ARG_U32(ctx, 3);
     ctx.r3.u64 = (uint64_t)(uintptr_t)cod3_pool_alloc(bytes, tag, flags);
 }
 

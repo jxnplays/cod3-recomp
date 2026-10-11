@@ -58,13 +58,18 @@
 //
 //  From sub_82345E48, at the bctrl:
 //
-//      r3 = the allocation key
+//      r3 = a pointer into the region this block belongs to, NOT a size
 //      r4 = out-parameter
 //      r5 = the region's size limit, per the surrounding code
 //      r6 = 0
 //
-//  and on return r3 is the block. The block header layout, from sub_823478F0
-//  and sub_823460D8:
+//  and on return r3 is the block.
+//
+//  r3 being a pointer was measured, not assumed: passing it through as a size
+//  produced a 2,623,216,044-byte allocation, and that value lies inside the very
+//  region the block walk was walking. Reading it as a length was the bug.
+//
+//  The block header layout, from sub_823478F0 and sub_823460D8:
 //
 //      +0   size in 16-byte units   (lhz, then rotlwi 4 -> x16)
 //      +5   flags byte
@@ -107,11 +112,21 @@ void cod3_heap_grow(PPCContext& __restrict ctx, uint8_t* base)
 {
     (void)base;
 
-    uint32_t want = ctx.r3.u32;
+    // r3 is NOT the requested size. It is an address - a pointer into the heap
+    // region this block belongs to. The guest passed 0x9C5B19AC and the runtime
+    // tried to allocate 2,623,216,044 bytes, because the value was read as a
+    // length. That address is inside the same region the block walk was walking.
+    //
+    // So the size cannot be taken from r3 at all. One page is used, which is
+    // always enough for the header this function writes and always small enough
+    // to succeed. Guessing a size from an address that is not one would be a
+    // worse failure than not guessing at all.
+    uint32_t want = 0x1000;
 
-    // A floor rather than a floor-and-trust: a block smaller than one page makes
-    // the header arithmetic in sub_823460D8 walk off the front of the region,
-    // which is the exact fault this path exists to prevent.
+    // Guards retained deliberately. They are not dead code: they make the
+    // behaviour explicit if this is ever changed to trust r3 again, and the
+    // ceiling is what stops a pointer from outside the heap reappearing as an
+    // unbounded request.
     if (want < 0x1000)
         want = 0x1000;
 
