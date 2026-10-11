@@ -290,6 +290,12 @@ uint32_t* g_vm_brk_slot();
 // unit initialisation order to get wrong.
 bool cod3_vm_quiet();
 
+// The first address NtAllocateVirtualMemory returned, or 0 if it has not been
+// called. Used to inspect a descriptor the guest actually created, rather than
+// one inferred from where the heap is expected to start - the loader's own
+// structures occupy the low part of the heap, so a computed guess reads them.
+uint32_t cod3_first_vm_page();
+
 // Allocate (once per field) a zeroed guest page to stand in for an XEX header
 // field this title does not carry. The Xbox 360 kernel answers such queries with
 // a pointer to a default value rather than failing, and the CRT dereferences the

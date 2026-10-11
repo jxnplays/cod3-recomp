@@ -115,92 +115,72 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 - heap new-page path returns an uninitialised block (current frontier)
+### Blocker 2 - the boot path walks an uninitialised heap descriptor (current frontier)
 
-Boot reaches thread creation. It now issues `NtCreateEvent`, `NtCreateMutant`,
-`NtWaitForSingleObjectEx`, `NtReleaseMutant`, `NtResumeThread` and
-`KeSetAffinityThread`, none of which it reached before. The CRT free-list seeder
-`sub_82357BF0` also runs now, where before it never did.
+Boot reaches thread creation and stops in the heap allocator. Measured by entry
+override:
 
 ```
-guest addr : 0x823460D8  (sub_823460D8)
-fault addr : 0x0
+sub_82345E48 #1 -> 0x9C5B4000   handle r4=0x9C5AD000
+  [h+56]   = 0x846A8590    (a valid first block)
+  [h+1408] = 0x00000000
+  [h+1412] = 0x00000000    <- the grow method
+
+first VM page 0x846A8000:
+  [h+56]   = 0x00000610
+  [h+1408] = 0x846A8610    <- POPULATED, pointing into its own page
+  [h+1412] = 0x00000000
 ```
+
+`0x846A8610 - 0x846A8000 = 0x610`, which is also `[page+56]`: the descriptor stores
+the offset of its own sub-structure, so `0x846A8000` is a correctly initialised
+heap descriptor.
+
+**The chain.** `sub_82345E48` tests `[heap+1412]`. Zero means "no grow method", so
+it falls back to `NtAllocateVirtualMemory` and returns the raw page as though it
+were an initialised block header. `sub_823460D8` then reads that block's `+12`
+field — zero — and faults at `0x0`.
+
+**Two descriptors exist.** `0x846A8000` is correctly initialised. `0x9C5AD000` —
+the one the boot path walks — has both fields zero. Either something passes the
+second where the first is wanted, or the second is expected to be initialised by a
+path that never runs. Both readings fit every measurement so far; neither is
+established.
+
+#### Ruled out by measurement
+
+- Not a missing free-list seed — `sub_82357BF0` runs once, `sub_8235B570` 14 times.
+- Not the VM stub — `NtAllocateVirtualMemory` succeeds, addresses are consistent.
+- Not `MmAllocatePhysicalMemoryEx` — implemented, requests succeed.
+- Not `r13` — the CRT thread block is built and intact.
+
+#### The correction that cost the most
+
+`sub_82347340` was identified as the heap-setup routine and chased on that basis
+for a while. **It is not.** The boot path calls it as:
 
 ```asm
-sub_823460D8:
-  lwz  r11,12(r31)     ; r11 = 0  <- the block header's +12 field
-  lwz  r8,0(r11)       ; dereferences null: fault address 0x0
+li  r3,2        ; pool type
+li  r4,0        ; flags
+li  r6,4096     ; size
+li  r7,0
+bl  sub_82347340
 ```
 
-`r31` is a heap block header. Its `+12` field is zero.
+That is `ExAllocatePool`-shaped. It returns an allocated address. An earlier trace
+appeared to show it installing methods because `r3` was read *after* the call, so
+the return value was mistaken for the descriptor that had been passed in; reading
+the argument before the call gives `0x00000002`.
 
-**What produced it**, measured rather than inferred:
+Every search that followed it was therefore searching the wrong function, and the
+"sole writer of `+1408`/`+1412`" claim was wrong.
 
-`sub_82346D98` calls `sub_82345E48`, which returns a block, and passes it
-straight to `sub_823460D8`. An entry override recorded what it returned:
-
-```
-sub_82345E48 #1 -> 0x9C5B4000  (heap r4=0x84686B98, key r5=0x60001000)
-```
-
-And `0x9C5B4000` is precisely what `NtAllocateVirtualMemory` had just handed out
-one page for:
-
-```
-NtAllocateVirtualMemory: flags=0x60001000 size=0x1000 -> 0x9C5B4000
-```
-
-So the guest is treating a **freshly allocated page as a heap block header**.
-Nothing ever wrote a header there, so `+12` reads as zero.
-
-That points at `sub_82345E48`: it walks a free list looking for a fit, and when
-it finds none it allocates a new page. Either the free list is empty, or the
-new-page path returns raw memory without building a header. `sub_82345E48` has
-three separate `li r3,0` returns, so a zero result is a real outcome — but here
-it returned non-zero, and that non-zero is the defect.
-
-**Not yet fixed.** Recorded so the next step starts from the measurement.
-
-#### What was fixed to get here
-
-Three distinct faults, in order:
-
-**1. `KeTlsSetValue` returned 0.** `sub_82352998` gates all CRT heap
-initialisation on it, so the free list was never seeded and `sub_82357E48`
-recursed against an empty list — ~6,420 levels, exhausting the host stack.
-
-**2. `r13` was never set.** It is the PowerPC per-thread data register; only two
-functions in the image write it, both thread trampolines that neither run during
-boot. The loader has to build the block. Layout is derived from the guest's own
-displacements: `[r13+0]`, `[r13+256]`, `[r13+268]`, `[r13+336]`, `[r13+17288]`,
-`[r13+17300]`. Offsets the access sites do not pin down are left zero rather than
-guessed.
-
-**3. `MmAllocatePhysicalMemoryEx` was a stub returning 0**, called 60 times, all
-failing. Two bugs in fixing it, both recorded in the source:
-
-- The parameter order. The size is in `r4`, not `r6`; `r6` is the LowestAddress
-  slot and is 0 on the common path, so reading it reported every request as
-  zero-byte. Caught only because 60 identical zero-byte requests is not plausible.
-- It committed where it should reserve. The 370.9 MiB request is the XEX default
-  heap size, reserved as address space. The heap was also too small: at 256 MiB
-  every large request failed, the CRT fell back to an 11 MiB retry, and the
-  structures behind the reservations were never built.
-
-One thing that was a false lead, and is here because it looked conclusive:
-`[r13+256]` read back as zero at fault time with no instruction anywhere near a
-store to it. That looked exactly like the CRT failing to initialise it. Scanning
-all 4,326 words of the block showed every one zeroed, including ones the loader
-had set — so something had cleared the whole block. It was the loader's own bump
-allocator overlapping the region `NtAllocateVirtualMemory` hands out from, so the
-CRT zeroed it as newly allocated memory. The two now have separate regions.
-
-#### Known divergence from hardware
-
-`MmAllocatePhysicalMemoryEx` reserves without committing. A guest read of
-never-written reserved space therefore sees whatever the region held rather than
-faulting. Not yet characterised: whether the guest relies on that fault.
+**Method note.** Three separate diagnostics in this investigation caused faults of
+their own — reading a field at the wrong base, reading through a handle validated
+against the wrong region, and reading a computed guess that landed on the loader's
+own structures instead of the heap. Each produced a fault address that looked
+exactly like the bug under investigation. All guest-field reads are now guarded,
+and `COD3_TRACE_*` output names the region a handle is expected to lie in.
 
 ### Previously: CRT thread-local pointer unset
 

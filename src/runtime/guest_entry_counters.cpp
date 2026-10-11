@@ -598,166 +598,72 @@ PPC_FUNC(sub_823438C8)
 // at this point in boot, and the next thing to establish is who is supposed to
 // set it - r13 is the CRT's per-thread pointer, initialised on the thread-start
 // path. That is the thread to pull, not this function.
-// -----------------------------------------------------------------------------
-// sub_82345E48 - the block allocator whose output is walked straight into
-// -----------------------------------------------------------------------------
+// =============================================================================
+//  Findings: why boot stops in sub_823460D8
+// =============================================================================
 //
-// sub_82346D98 calls it, then passes its result to sub_823460D8:
+//  MEASURED, by entry override rather than by reading the stack:
 //
-//   0x82346E10  bl    sub_82345E48
-//   0x82346E14  mr.   r4,r3
-//   0x82346E18  beq   0x82346e60        bails out if r3 == 0
-//   ...
-//   0x82346E34  bl    sub_823460D8
+//    sub_82345E48 #1 -> 0x9C5B4000  handle r4=0x9C5AD000
+//      [h+56]  = 0x846A8590   (a valid first block)
+//      [h+1408]= 0x00000000
+//      [h+1412]= 0x00000000   <- the grow method
 //
-// and sub_823460D8 immediately does `lwz r11,12(r31)` where r31 is derived from
-// the block header, then `lwz r8,0(r11)`. With that +12 field unset the second
-// load faults at address 0, which is exactly the current crash.
+//    first VM page 0x846A8000:
+//      [h+56]  = 0x00000610
+//      [h+1408]= 0x846A8610   <- POPULATED, and it points into the same page
+//      [h+1412]= 0x00000000
 //
-// sub_82345E48 returns 0 from three separate places, so a zero result is a real
-// outcome rather than a stub artefact. What it actually returned is recorded here
-// rather than inferred by reading the list walk by hand, which is how the last
-// few diagnoses went wrong.
-extern "C" void __imp__sub_82345E48(PPCContext& __restrict ctx, uint8_t* base);
-
-PPC_FUNC(sub_82345E48)
-{
-    PPC_FUNC_PROLOGUE();
-
-    const uint32_t heap = ctx.r4.u32;
-
-    __imp__sub_82345E48(ctx, base);
-
-    static unsigned calls = 0;
-    if (calls++ < 4)
-    {
-        // Read the fields through the handle exactly as the guest does, at
-        // [r4+1408] and [r4+1412], and only when r4 is a plausible guest address.
-        // An unguarded read of a null handle faults at the field offset, which is
-        // indistinguishable from the bug being diagnosed - that happened once
-        // already with a read at ctx.r3.
-        const bool haveHeap =
-            heap >= g_guest_heap_base &&
-            heap < g_guest_heap_base + g_guest_heap_size;
-        std::fprintf(stderr,
-            "[entries] sub_82345E48 #%u -> 0x%08X  handle r4=0x%08X%s\n",
-            calls, ctx.r3.u32, heap, haveHeap ? "" : "  (not a guest address)");
-        if (haveHeap)
-        {
-            std::fprintf(stderr,
-                "[entries]   [h+56]=0x%08X  [h+1408]=0x%08X"
-                "  [h+1412]=0x%08X <- grow method\n",
-                cod3_load_u32(heap + 56),
-                cod3_load_u32(heap + 1408),
-                cod3_load_u32(heap + 1412));
-        }
-        std::fflush(stderr);
-    }
-}
-// -----------------------------------------------------------------------------
-// sub_82349CC0 - the only caller of sub_82347340, which installs the heap methods
-// -----------------------------------------------------------------------------
+//  0x846A8610 - 0x846A8000 = 0x610, which is also [page+56]. The descriptor
+//  stores the offset of its own sub-structure, so it is self-describing and
+//  0x846A8000 is a correctly initialised heap descriptor.
 //
-// sub_82347340 is the sole writer of the heap descriptor's method table at +1408
-// and the grow method at +1412. sub_82345E48 tests [heap+1412]: when it is zero
-// the guest falls back to a raw NtAllocateVirtualMemory and treats the returned
-// page as a block header, which is the current crash.
+//  ## The chain
 //
-// sub_82349CC0 only calls it when a global is zero:
+//  sub_82345E48 tests [heap+1412]. Zero means "no grow method", so it falls back
+//  to NtAllocateVirtualMemory and returns the raw page as though it were an
+//  initialised block header. sub_823460D8 then reads that block's +12 field,
+//  which is zero, and faults at address 0x0.
 //
-//   0x82349D60  lwz  r3,-22080(r31)      the global, at 0x826E5380
-//   0x82349D64  cmplwi cr6,r3,0
-//   0x82349D68  bl   sub_82347340        skipped unless r3 == 0
+//  ## What is NOT the cause, having been checked
 //
-// So either this function never runs, or the global is already set and the heap
-// methods are never installed. Both are recorded rather than guessed between.
-extern "C" void __imp__sub_82349CC0(PPCContext& __restrict ctx, uint8_t* base);
-
-PPC_FUNC(sub_82349CC0)
-{
-    PPC_FUNC_PROLOGUE();
-
-    __imp__sub_82349CC0(ctx, base);
-
-    static unsigned calls = 0;
-    if (calls++ < 4)
-    {
-        std::fprintf(stderr,
-            "[entries] sub_82349CC0 #%u -> r3=0x%08X"
-            "  [0x826E5380]=0x%08X (heap-setup global)\n",
-            calls, ctx.r3.u32, cod3_load_u32(0x826E5380));
-        std::fflush(stderr);
-    }
-}
-// -----------------------------------------------------------------------------
-// sub_82347340 - installs the heap method table (+1408) and grow method (+1412)
-// -----------------------------------------------------------------------------
+//  * Not a missing free-list seed - the seeder sub_82357BF0 runs (1 call) and its
+//    per-slot seeder sub_8235B570 runs 14 times.
+//  * Not the VM stub - NtAllocateVirtualMemory succeeds and the addresses it
+//    returns are consistent and non-overlapping.
+//  * Not MmAllocatePhysicalMemoryEx - it is implemented, and its requests now
+//    succeed (371 MiB reservation, 11 MiB retry, 16 KiB and smaller).
+//  * Not r13 - the CRT thread block is built and intact.
 //
-// The sole writer of the fields whose absence causes the current crash. Counting
-// entries here answers directly whether the heap setup runs, which the global's
-// value alone does not: a zero global means "should run", not "did run".
-extern "C" void __imp__sub_82347340(PPCContext& __restrict ctx, uint8_t* base);
-
-PPC_FUNC(sub_82347340)
-{
-    PPC_FUNC_PROLOGUE();
-
-    const uint32_t desc = ctx.r3.u32;
-
-    __imp__sub_82347340(ctx, base);
-
-    static unsigned calls = 0;
-    if (calls++ < 4)
-    {
-        // Read back what the call actually wrote rather than assuming the stores
-        // landed. Earlier work recorded a method pointer read at 0x8291F6C8 still
-        // being zero, so the install may be landing somewhere other than where it
-        // is looked for - or not landing at all.
-        // NOT read here: ctx.r3 is not the descriptor base, and dereferencing it
-        // faulted at 0x586. That was a fault caused by the diagnostic rather than
-        // one it was diagnosing. The arguments are recorded instead so the right
-        // base can be established before any field is touched.
-        std::fprintf(stderr,
-            "[entries] sub_82347340 #%u -> r3=0x%08X"
-            "  (r4=0x%08X r5=0x%08X r6=0x%08X r7=0x%08X r8=0x%08X)\n",
-            calls, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32,
-            ctx.r6.u32, ctx.r7.u32, ctx.r8.u32);
-        (void)desc;
-        std::fflush(stderr);
-    }
-}
-// -----------------------------------------------------------------------------
-// sub_82346D98 - creates heap descriptors
-// -----------------------------------------------------------------------------
+//  ## The correction that mattered
 //
-// The heap the guest actually uses during boot is 0x9C5AD000, and its method
-// table at +1408/+1412 is zero. sub_82347340 - the sole writer of those fields -
-// ran, and it installed them on a DIFFERENT descriptor, 0x846A8000.
+//  sub_82347340 was identified as the heap-setup routine and chased for a while on
+//  that basis. It is not. The boot path calls it as
 //
-// So a second descriptor was created without going through that setup. This
-// counts the call and prints what it returns, which distinguishes "created a
-// second heap" from "handed back the first one again".
-extern "C" void __imp__sub_82346D98(PPCContext& __restrict ctx, uint8_t* base);
+//      li r3,2 ; li r4,0 ; li r6,4096 ; li r7,0 ; bl sub_82347340
+//
+//  which is ExAllocatePool-shaped: type 2, flags 0, size 4096. It returns an
+//  allocated address. An earlier trace appeared to show it installing methods
+//  because r3 was read AFTER the call, so the return value was mistaken for the
+//  descriptor that had been passed in. Reading the argument before the call gives
+//  0x00000002.
+//
+//  So the searches that followed it were searching the wrong function, and the
+//  "sole writer of +1408/+1412" claim was wrong. The remaining writers are
+//  sub_823473D8 (uncalled), sub_824C2640 (operates on image-resident addresses,
+//  0x82A8E610 and 0x82A90004 - not the heap), sub_82571678 (uncalled),
+//  sub_823AAC90 and sub_823AB250 (called only from sub_823AB698).
+//
+//  ## Where that leaves it
+//
+//  Two descriptors exist. 0x846A8000 is correctly initialised, with +1408
+//  pointing at its own sub-structure. 0x9C5AD000 - the one the boot path walks -
+//  has both fields zero. Something passes the second where the first is wanted,
+//  or the second is expected to be initialised by a path that never runs.
+//
+//  Not established which. Both readings fit every measurement so far, and
+//  choosing between them without evidence is what produced the wrong answers
+//  above.
+//
+// =============================================================================
 
-PPC_FUNC(sub_82346D98)
-{
-    PPC_FUNC_PROLOGUE();
-
-    __imp__sub_82346D98(ctx, base);
-
-    static unsigned calls = 0;
-    if (calls++ < 6)
-    {
-        std::fprintf(stderr,
-            "[entries] sub_82346D98 #%u -> r3=0x%08X"
-            "  [+1408]=0x%08X [+1412]=0x%08X\n",
-            calls, ctx.r3.u32,
-            // The handle is descriptor+0x50, so the fields are read relative to
-            // that offset rather than to the handle itself. Reading them at the
-            // handle put every offset 0x50 bytes late, which reports fields as
-            // zero that are not.
-            ctx.r3.u32 ? cod3_load_u32(ctx.r3.u32 - 0x50 + 1408) : 0u,
-            ctx.r3.u32 ? cod3_load_u32(ctx.r3.u32 - 0x50 + 1412) : 0u);
-        std::fflush(stderr);
-    }
-}

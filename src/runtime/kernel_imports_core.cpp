@@ -606,6 +606,17 @@ uint32_t* g_vm_brk_slot()
     return &g_vm_brk;
 }
 
+// The first page this allocator handed out. Recorded so a descriptor the guest
+// actually created can be inspected, rather than one inferred from where the
+// heap is expected to begin - the loader's own structures occupy the low part of
+// that region, so a computed guess reads them instead of the heap.
+static uint32_t g_vm_first_page = 0;
+
+uint32_t cod3_first_vm_page()
+{
+    return g_vm_first_page;
+}
+
 // Live regions, so a new allocation never overlaps one already handed out.
 // The title stores these addresses in long-lived descriptors, so handing back
 // the same address twice corrupts them silently and much later.
@@ -778,6 +789,13 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     }
 
     // The VM logs its activity, which is useful while bringing the boot path up
+    // Record the first page handed out. Inspecting a descriptor the guest
+    // actually created is more reliable than inferring one from where the heap is
+    // expected to begin: the loader's own structures occupy the low part of that
+    // region, so a computed guess reads them and reports our data as the guest's.
+    if (g_vm_first_page == 0)
+        g_vm_first_page = addr;
+
     // and noisy afterwards. COD3_QUIET_VM=1 silences it.
     if (cod3_vm_quiet())
     {
