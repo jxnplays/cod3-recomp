@@ -12,7 +12,11 @@
 
 [CmdletBinding()]
 param(
-    [string]$Xex = 'X:\AI\Recomp Projects\Call of Duty 3\default.xex',
+    # Where the original Xbox 360 executable lives. There is deliberately no
+    # default: this path belongs to whoever owns the dump, and guessing it would
+    # make a fresh clone fail with a confusing "XEX not found" rather than an
+    # obvious prompt. Pass it explicitly, or set COD3_XEX.
+    [string]$Xex = $env:COD3_XEX,
     [int]$Jobs = 8,
     [switch]$Recompile,
     [switch]$SkipTools
@@ -32,6 +36,23 @@ function Write-Ok($m)   { Write-Host "    OK: $m" -ForegroundColor Green }
 function Write-Info($m) { Write-Host "    $m" -ForegroundColor Gray }
 
 New-Item -ItemType Directory -Force -Path $BuildDir, $PpcDir, $RtDir, $ConfigDir | Out-Null
+
+if ([string]::IsNullOrWhiteSpace($Xex)) {
+    throw @"
+No Xbox 360 executable given.
+
+This project recompiles the original game, so it needs your own copy of
+default.xex from an Xbox 360 dump. It is not included and cannot be.
+
+Pass it explicitly:
+
+    powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Xex "C:\path\to\default.xex"
+
+or set it once for the session:
+
+    `$env:COD3_XEX = "C:\path\to\default.xex"
+"@
+}
 
 if (-not (Test-Path $Xex)) { throw "XEX not found: $Xex" }
 

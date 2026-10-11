@@ -983,7 +983,8 @@ void cod3_populate_loader_globals()
         std::fprintf(stderr,
             "[cod3] loader globals slot 0x%08X is outside the mapped image "
             "(ends 0x%08X); the CRT will bail out during boot.\n",
-            kLoaderGlobalsSlot, imageEnd);
+            static_cast<uint32_t>(kLoaderGlobalsSlot),
+            static_cast<uint32_t>(imageEnd));
         return;
     }
 

@@ -21,10 +21,10 @@ supplies the runtime that the translated code links against: guest memory, the
 PowerPC dispatch table, and an implementation of the Xbox 360 kernel API
 surface the title imports.
 
-There is no emulation layer and no dynamic translation at run time Ã¢â‚¬â€ once
+There is no emulation layer and no dynamic translation at run time - once
 compiled, the game code is ordinary x86-64 that the OS runs natively.
 
-**Source dump** (read-only): `X:\AI\Recomp Projects\Call of Duty 3`
+**Source dump** (read-only): your own copy of `default.xex`
 
 ---
 
@@ -54,23 +54,40 @@ boundary, but there is a *vtable* boundary: 211 COM-style method tables were
 measured in `.rdata`. The plan is to intercept NGL's flush points and drive a real
 `IDirect3DDevice9` rather than emulating the Xenos command processor.
 See **[docs/GRAPHICS.md](docs/GRAPHICS.md)**.
+
 ---
 
 ## Quick start
+
+You need your own copy of Call of Duty 3 for Xbox 360. It is not included here
+and cannot be - this project recompiles the original executable, so it needs the
+original `default.xex` from a dump.
 
 ```powershell
 # 1. Toolchain: clone + build XenonRecomp (~2 min)
 powershell -ExecutionPolicy Bypass -File tools\setup.ps1
 
 # 2. Full pipeline: analyse, recompile, compile the port
-powershell -ExecutionPolicy Bypass -File tools\build.ps1
+powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Xex "C:\path\to\Call of Duty 3\default.xex"
 
 # 3. Run
-build\host\COD3.exe --xex "X:\AI\Recomp Projects\Call of Duty 3\default.xex"
+build\host\COD3.exe
 ```
+
+Step 3 needs no arguments. The executable looks for the game next to itself and
+in the folder you used previously, and if it finds neither it asks for it - a
+folder picker when you launched it from a console, a clear message otherwise -
+then remembers the answer. `--xex`, `--game-dir` and `--multiplayer` override the
+search if you want to be explicit.
 
 Prerequisites: VS 2022 Build Tools, LLVM 18+ (20.x used here), Python 3.11.
 Full details in **[docs/SETUP.md](docs/SETUP.md)**.
+
+Incremental rebuilds, if you are only changing the runtime:
+
+```
+cmd /c tools\build_cod3.bat
+```
 
 ---
 
@@ -107,7 +124,7 @@ Two design decisions worth calling out:
 **The runtime owns the XEX loading, via the recompiler's own parser.**
 `cod3_load_image()` calls `Xex2LoadImage()` from XenonUtils, the same code
 XenonRecomp used. That guarantees the bytes being executed are provably the
-bytes that were translated Ã¢â‚¬â€ no risk of the runtime and the translator
+bytes that were translated - no risk of the runtime and the translator
 disagreeing about decryption or import thunk patching.
 
 **The import stub table is generated, not hand-listed.** The set of required
@@ -123,7 +140,7 @@ This is a clean, standalone project.
 * No code, assets, configuration or patterns were taken from any prior
   recompilation project. The runtime, the analysis tooling and the graphics plan
   were written for this repository.
-* XenonRecomp is used strictly as a tool Ã¢â‚¬â€ the upstream CLI, built from its own
+* XenonRecomp is used strictly as a tool - the upstream CLI, built from its own
   source. Its `XenonUtils`/`ppc_context.h` supply the translation contract, not
   a game runtime; supplying the runtime is this project's job.
 * Only `hedge-dev/XenonRecomp` is used. Other recompilation projects surfaced

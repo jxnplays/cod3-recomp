@@ -80,7 +80,7 @@ points at `../../../Call of Duty 3/default.xex`. If you move the dump, re-run
 ## Running
 
 ```powershell
-build\host\COD3.exe --xex "X:\AI\Recomp Projects\Call of Duty 3\default.xex"
+build\host\COD3.exe
 ```
 
 | Option | Effect |
