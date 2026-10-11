@@ -202,6 +202,32 @@ Every block reports a sane size and steps backwards by exactly that much.
 **Skips under `COD3_TOLERATE_HEAP_FAULT` are zero** — the first time the heap
 tolerance has had nothing to tolerate on this path.
 
+#### An attempt that was abandoned
+
+The obvious follow-up to the above is to stop the crash handler printing a
+meaningless offset for a stub. It should report *"inside sub_823460D8's
+prologue"* rather than *"+1081"*, which is measured from four bytes of
+`.long 0x0`.
+
+**This was attempted and reverted.** The implementation scanned the generated
+`ppc_recomp.*.cpp` for function bodies consisting of a single `.long 0x0`. The
+logic was verified correct in isolation — a faithful reimplementation finds
+**9,660** stubs — and it still found zero at runtime. The discrepancy was never
+located: file discovery was confirmed working (`FindFirstFileA` finds them), and
+the parse was confirmed working (the same code finds all 9,660 under Python).
+
+Rather than leave a feature in the tree that reports nothing, it was reverted.
+It is recorded here so it is not re-attempted from scratch, and because the
+honest conclusion is that the runtime scan has a defect nobody has found yet —
+not that the approach is wrong.
+
+If it is picked up again, the useful first step is to print the *count and the
+first few body strings* from inside the C++ and compare them side by side with
+the Python reference in the same run. Doing that here produced a misleading
+reading, because the diagnostic printed embedded newlines and the output was
+truncated to the first eight lines — which made a correct `mnemonics=37` look
+like a failure.
+
 #### Current frontier: an unresolved 4-byte thunk
 
 The fault is now reported at `sub_823460D4 +1081`, and that offset is **not
