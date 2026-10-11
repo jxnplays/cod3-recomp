@@ -1,4 +1,8 @@
+# Build outputs
 build/
+.tools/
+
+# Compiled artefacts
 *.exe
 *.dll
 *.pdb
@@ -6,8 +10,15 @@ build/
 *.o
 *.lib
 *.a
+
+# IDE / editor
 .vs/
+.vscode/
+.idea/
 *.user
 *.suo
+
+# Logs and scratch
 *.log
 *.tmp
+*.bak

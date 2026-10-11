@@ -1,0 +1,32 @@
+# XenonRecomp configuration for Call of Duty 3 (Xbox 360) — default.xex
+#
+# All paths are relative to the directory containing this file.
+#
+# Addresses below were auto-detected with tools/find_symbols.py, which scans the
+# extracted PE image for the documented prologue/epilogue byte signatures.
+# See docs/ANALYSIS.md for how each was confirmed.
+
+# NOTE: XenonRecomp resolves these by literal string concatenation with the
+# directory containing this TOML, so `file_path` MUST be relative (or the dump
+# must sit directly under config/recomp/). tools/make_config.py regenerates this
+# file with correct relative paths for an arbitrary dump location.
+[main]
+file_path = "../../../Call of Duty 3/default.xex"
+out_directory_path = "../../build/ppc"
+switch_table_file_path = "COD3_switch_tables.toml"
+
+# Optimizations are intentionally all disabled. The XenonRecomp README advises
+# getting a successfully running recompilation before enabling any of these,
+# because they depend on the guest never violating the PowerPC ABI.
+
+# --- PowerPC non-volatile register save/restore helpers ---
+# XenonRecomp needs the start address of each of these because the compiler
+# inlines them mid-function, so they must be recognised as fall-through blocks.
+restgprlr_14_address  = 0x82350AB0   # ld  r14, -0x98(r1)
+savegprlr_14_address  = 0x82350A60   # std r14, -0x98(r1)
+restfpr_14_address    = 0x8235121C   # lfd f14, -0x90(r12)
+savefpr_14_address    = 0x823511D0   # stfd f14, -0x90(r12)
+restvmx_14_address    = 0x82351508   # li r11,-0x120; lvx v14
+savevmx_14_address    = 0x82351270   # li r11,-0x120; stvx v14
+restvmx_64_address    = 0x8235159C   # li r11,-0x400; lvx128 v64
+savevmx_64_address    = 0x82351304   # li r11,-0x400; stvx128 v64
