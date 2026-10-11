@@ -1740,9 +1740,26 @@ PPC_FUNC(__imp__VdPersistDisplay)
 
 PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
 {
-    const uint32_t out = ctx.r3.u32;
+    // r3 is an index into the gamma table; r4 is the out-pointer.
+    //
+    // The call site is:
+    //
+    //     addi r3,r1,88        ; index
+    //     addi r4,r1,80        ; &gamma
+    //     bl   VdGetCurrentDisplayGamma
+    //
+    // The previous version wrote through r3, i.e. through the index, corrupting
+    // the caller's stack and leaving gamma unset.
+    (void)ctx.r3.u32;
+
+    const uint32_t out = ctx.r4.u32;
     if (out != 0)
-        cod3_store_u32(out, 0x000A0000u); // gamma 1.0
+    {
+        // Xbox gamma is a fixed-point 8.8 value; 1.0 is 0x100, and the high byte
+        // is the one the NGL layer reads.
+        cod3_store_u32(out, 0x00000100u);
+    }
+
     ctx.r3.u64 = 0;
 }
 
