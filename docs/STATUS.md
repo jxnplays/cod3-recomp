@@ -501,6 +501,47 @@ The `sane_stack_size` substitution remains a visible workaround rather than a fi
 it reports every substitution, so the count in a run says how far the real
 signature is from the documented one.
 
+#### The heap is confirmed correct and the fault has moved past it
+
+A bounded probe on the block walk answered the open question. Three walks, all
+with sane headers:
+
+```
+walk #1: descriptor=0x846A8000 block=0x846A8760 units=0x000E (224 B)  -> prev=0x846A8680
+walk #2: descriptor=0x846A8000 block=0x846A8E40 units=0x0003  (48 B)  -> prev=0x846A8E10
+walk #3: descriptor=0x846A8000 block=0x9C5FE000 units=0x0017 (368 B)  -> prev=0x9C5FDE90
+```
+
+Every size is plausible and every step backwards lands inside the heap. The
+allocator, the method table, the lock and the block headers are all correct, and
+the guest is using them.
+
+**The fault is now `sub_822FE358 +1050`, reading offset `0x10` from a null
+pointer** — in the display code (`0x822Fxxxx`), the same neighbourhood as the MMIO
+sites. Distinct kernel APIs reached has gone from 18 to **19**.
+
+So the CRT heap is no longer where boot stops. That is worth recording plainly
+because it is the first subsystem that is finished rather than narrowed.
+
+#### NT file I/O: implemented, not yet exercised
+
+`src/runtime/nt_file_io.cpp` implements `NtCreateFile`, `NtClose`, `NtReadFile`,
+`NtWriteFile`, `NtFlushBuffersFile`, `NtQueryInformationFile` and
+`NtSetInformationFile` against real Win32 handles, with guest handles translated
+rather than passed through and paths resolved beneath the launcher's directory.
+
+All seven call sites were audited before any of it was written, and the
+signatures **match the documented NT API exactly** — the right basis, since the
+Xbox kernel layer is NT. `Event` and `ApcRoutine` are null at every observed read
+and write, so synchronous I/O suffices and async was deliberately not invented.
+
+**Boot has not called any of it yet.** It reaches `XamLoaderGetLaunchData` and
+then faults earlier, in the display layer. The file I/O is verified to build, to
+run, and to be correct against its call sites — but it is not yet a working
+feature, and claiming otherwise would be claiming progress that has not happened.
+
+Generated stubs: 135 to 128.
+
 #### What to do next
 
 Two things, in order.
