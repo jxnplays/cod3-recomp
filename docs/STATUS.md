@@ -115,7 +115,43 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 - CRT vtable dispatch (current frontier)
+### Blocker 2 - CRT thread-local pointer is unset (current frontier)
+
+Boot no longer ends in stack exhaustion. `KeTlsSetValue` was returning 0
+unconditionally, and `sub_82352998` gates all CRT heap initialisation on it:
+
+```asm
+0x823529F8  bl    sub_82352998 -> KeTlsSetValue
+0x823529FC  cmpwi r3,0
+0x82352A00  beq   0x82352abc      ; bail out when r3 == 0
+0x82352A04  bl    sub_82352628
+0x82352A08  bl    sub_82357BF0    ; seeds the 36 free-list slots
+```
+
+With the bail-out always taken, `sub_82357BF0` never ran, every size class in
+the CRT free list stayed empty, and `sub_82357E48` recursed forever against an
+empty list — ~6,420 levels deep, exhausting the host stack. Returning the stored
+value from `KeTlsSetValue` breaks that; the guest uses the result as a
+yes/no continue flag, never as a status code.
+
+Boot now runs past heap init and stops at:
+
+```
+[cod3]   guest addr  : 0x823438C8  (sub_823438C8, +8 bytes)
+[cod3]   fault addr  : 0x100
+```
+
+```asm
+sub_823438C8:
+  lwz  r11,256(r13)
+  lwz  r3,332(r11)     ; faults: r11 == 0
+```
+
+`[r13+256]` reads as zero, so the second load dereferences `0x100`. **r13 is the
+CRT per-thread pointer and it is unset.** The next step is to find what is
+supposed to set it — the thread-start path, not this function.
+
+### Previously: CRT vtable dispatch
 
 The boot path now reaches the CRT's main init routine (`sub_82349A98`) and stops
 in a dispatch loop that walks a loader-populated structure:
