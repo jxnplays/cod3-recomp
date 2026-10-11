@@ -1,10 +1,14 @@
 ![COD3 Recomp Logo](docs/logo.png)
 
 <div align="center">
-  <img src="docs/status.svg?v=1" width="900">
+  <img src="docs/status.svg?v=2" width="900">
 </div>
 
 # COD3 Recomp
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)]()
+[![Status](https://img.shields.io/badge/status-active-brightgreen)]()
 
 Static recompilation of **Call of Duty 3** (Xbox 360) to a native Windows PC
 binary.
@@ -132,4 +136,22 @@ This is a clean, standalone project.
 | **[docs/STATUS.md](docs/STATUS.md)** | What works, what does not, and the ordered path to a playable build |
 | docs/AGENT_INSTRUCTIONS.md | Original task brief |
 
-Private project. Do not publish.
+---
+
+## Legal Disclaimer
+
+This repository contains **only** the recompilation harness, runtime glue, and supporting tooling. It does **not** contain any game code, assets, textures, models, sound, or other copyrighted material from Call of Duty 3 or any other title.
+
+You must legally obtain your own dump of the original game. This project is not affiliated with, endorsed by, or sponsored by Activision, Treyarch, or any rights holder. All trademarks and copyrights remain the property of their respective owners.
+
+Use of this software is at your own risk. The authors provide no warranty and accept no liability for any damages, legal consequences, or other issues arising from its use.
+
+---
+
+## License
+
+The recompilation harness and local modifications in this repository are licensed under the [MIT License](LICENSE).
+
+Game code and assets are **not** included and are not licensed by this project.
+
+See also: [Code of Conduct](CODE_OF_CONDUCT.md) · [Security Policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
