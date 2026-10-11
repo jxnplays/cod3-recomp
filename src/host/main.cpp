@@ -5,22 +5,71 @@
 //  control to its recompiled entry point. Everything the guest does from there
 //  on runs through the recompiled PowerPC translation.
 //
+//  The recomp does not embed the game's own files, so it looks for them the way
+//  other recompilations do: next to the executable, in a remembered location
+//  from a previous run, and failing that it asks. If this build is run from a
+//  console it prints the path it wants; if it is run by double-click it opens a
+//  folder picker.
+//
 //  Usage:
-//      COD3.exe [--xex <path>] [--title "Call of Duty 3"] [--no-window]
+//      COD3.exe [--xex <path>] [--game-dir <dir>] [--title "..."] [--no-window]
 // =============================================================================
 
 #include "cod3_runtime.h"
 
 #include <windows.h>
+#include <commdlg.h>
 
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
+
+#pragma comment(lib, "comdlg32.lib")
 
 namespace {
 
-// Path to default.xex, resolved relative to this executable so the game can be
-// launched from anywhere as long as the dump sits next to the binary.
+// Remembered between runs so the picker is only shown when it has to be.
+// Narrow, because it is combined with a path built from GetModuleFileNameA.
+constexpr char kIniPath[] = "cod3-recomp.ini";
+
+// The single executable the recomp needs to boot. The rest of the game data is
+// read later by the title itself, through the storage APIs.
+constexpr char kDefaultXex[] = "default.xex";
+
+// Multiplayer title. Selected rather than auto-detected, because both XEXs are
+// valid inputs and guessing would silently pick the wrong one.
+constexpr char kMultiplayerXex[] = "codmp_xenonf.xex";
+
+std::wstring widen(const std::string& s)
+{
+    if (s.empty())
+        return std::wstring();
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+                                      static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0)
+        return std::wstring();
+    std::wstring out(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                        out.data(), n);
+    return out;
+}
+
+std::string narrow(const std::wstring& s)
+{
+    if (s.empty())
+        return std::string();
+    const int n = WideCharToMultiByte(CP_UTF8, 0, s.c_str(),
+                                      static_cast<int>(s.size()), nullptr, 0,
+                                      nullptr, nullptr);
+    if (n <= 0)
+        return std::string();
+    std::string out(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                        out.data(), n, nullptr, nullptr);
+    return out;
+}
+
 std::string executable_directory()
 {
     char buffer[MAX_PATH] = {};
@@ -37,8 +86,151 @@ std::string executable_directory()
 
 bool file_exists(const std::string& path)
 {
+    if (path.empty())
+        return false;
     const DWORD attrs = GetFileAttributesA(path.c_str());
-    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+    return attrs != INVALID_FILE_ATTRIBUTES &&
+           !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::string ini_path()
+{
+    char buffer[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+    std::string path(buffer, n);
+    const size_t slash = path.find_last_of("\\/");
+    if (slash != std::string::npos)
+        path.resize(slash + 1);
+    path += kIniPath;
+    return path;
+}
+
+std::string read_saved_xex()
+{
+    char value[MAX_PATH] = {};
+    GetPrivateProfileStringA("game", "xex", "", value, sizeof(value),
+                             ini_path().c_str());
+    return value[0] != '\0' ? std::string(value) : std::string();
+}
+
+void save_xex(const std::string& xex)
+{
+    WritePrivateProfileStringA("game", "xex", xex.c_str(), ini_path().c_str());
+}
+
+bool looks_like_xex(const std::string& path)
+{
+    // A XEX2 container starts with the magic "XEX2". Checking it means a wrong
+    // file - a .xex from a different game, or an unrelated binary - is rejected
+    // immediately rather than failing much later inside the loader.
+    HANDLE f = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+        return false;
+
+    char magic[4] = {};
+    DWORD read = 0;
+    const BOOL ok = ReadFile(f, magic, sizeof(magic), &read, nullptr);
+    CloseHandle(f);
+
+    return ok && read == sizeof(magic) &&
+           std::memcmp(magic, "XEX2", 4) == 0;
+}
+
+// Ask the user to point at the game folder. Returns the chosen XEX path, or an
+// empty string if they cancelled.
+std::string ask_for_xex(bool interactive)
+{
+    const std::wstring title = L"Select the Call of Duty 3 (Xbox 360) folder";
+
+    std::wstring buffer(MAX_PATH, L'\0');
+
+    // These must outlive the dialog call: OPENFILENAME stores raw pointers, and
+    // binding a temporary here leaves lpstrInitialDir dangling.
+    const std::wstring initialDir = widen(executable_directory());
+
+    // An .xex filter keeps the dialog showing the right file type, and
+    // OFN_FILEMUSTEXIST means the user cannot hand back a path that is not there.
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"Xbox 360 executables (*.xex)\0*.xex\0All files (*.*)\0*.*\0\0";
+    ofn.lpstrFile = buffer.data();
+    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
+    ofn.lpstrTitle = title.c_str();
+    ofn.lpstrInitialDir = initialDir.c_str();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER |
+                OFN_NOCHANGEDIR;
+
+    if (interactive)
+    {
+        if (GetOpenFileNameW(&ofn))
+        {
+            std::string chosen = narrow(std::wstring(buffer.data()));
+            if (file_exists(chosen) && looks_like_xex(chosen))
+                return chosen;
+
+            std::fprintf(stderr,
+                "[cod3] %s does not look like an Xbox 360 executable "
+                "(expected a XEX2 file).\n", chosen.c_str());
+        }
+        return std::string();
+    }
+
+    // Non-interactive (a console launch, or a test harness): ask on stderr
+    // instead of opening a dialog that nobody can answer.
+    std::fprintf(stderr,
+        "\n"
+        "  COD3 Recomp needs the original Call of Duty 3 (Xbox 360) files.\n"
+        "\n"
+        "  Point it at the default.xex from your Xbox 360 dump, for example:\n"
+        "\n"
+        "      COD3.exe --xex \"<path>\\\\default.xex\"\n"
+        "\n"
+        "  or pass the folder containing it:\n"
+        "\n"
+        "      COD3.exe --game-dir \"<path>\"\n"
+        "\n");
+    return std::string();
+}
+
+// Search order: explicit override, then a remembered path, then the usual
+// places a dump tends to live relative to the executable.
+std::string locate_xex(const std::string& overridePath,
+                       const std::string& gameDir,
+                       const std::string& wanted)
+{
+    if (!overridePath.empty())
+        return file_exists(overridePath) ? overridePath : std::string();
+
+    if (!gameDir.empty())
+    {
+        std::string full = gameDir;
+        if (!full.empty() && full.back() != '\\' && full.back() != '/')
+            full += '\\';
+        full += wanted;
+        if (file_exists(full))
+            return full;
+    }
+
+    const std::string saved = read_saved_xex();
+    if (!saved.empty() && file_exists(saved))
+        return saved;
+
+    const std::string exeDir = executable_directory();
+    const char* relatives[] = {
+        "",
+        "game\\",
+        "..\\..\\Call of Duty 3\\",
+        "..\\..\\..\\Call of Duty 3\\",
+    };
+    for (const char* rel : relatives)
+    {
+        std::string full = exeDir + "\\" + rel + wanted;
+        if (file_exists(full))
+            return full;
+    }
+    return std::string();
 }
 
 void print_usage()
@@ -49,8 +241,11 @@ void print_usage()
         "Usage: COD3.exe [options]\n"
         "\n"
         "Options:\n"
-        "  --xex <path>     Path to default.xex. Defaults to looking next to the\n"
-        "                   executable, then at the original dump location.\n"
+        "  --xex <path>     Path to default.xex. If omitted, the game folder is\n"
+        "                   looked up next to this executable and in the location\n"
+        "                   used on a previous run, and finally asked for.\n"
+        "  --game-dir <dir> Folder containing the Xbox 360 dump.\n"
+        "  --multiplayer    Load codmp_xenonf.xex instead of default.xex.\n"
         "  --title <text>   Window title. Defaults to the game name.\n"
         "  --no-window      Do not create a host window (headless bring-up).\n"
         "  --help           Show this message.\n"
@@ -68,9 +263,12 @@ int main(int argc, char** argv)
     // reported against the right guest address.
     cod3_install_crash_handler();
 
-    const char* xexOverride = nullptr;
+    std::string xexOverride;
+    std::string gameDir;
     std::string windowTitle = "Call of Duty 3 (Xbox 360 recomp)";
     bool createWindow = true;
+    bool interactive = true;
+    bool multiplayer = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -78,6 +276,18 @@ int main(int argc, char** argv)
         if (arg == "--xex" && i + 1 < argc)
         {
             xexOverride = argv[++i];
+        }
+        else if (arg == "--game-dir" && i + 1 < argc)
+        {
+            gameDir = argv[++i];
+        }
+        else if (arg == "--multiplayer")
+        {
+            // Both titles are supported inputs; the choice is explicit so the
+            // recomp never silently boots the wrong one.
+            xexOverride.clear();
+            multiplayer = true;
+            windowTitle = "Call of Duty 3 - Multiplayer (Xbox 360 recomp)";
         }
         else if (arg == "--title" && i + 1 < argc)
         {
@@ -100,40 +310,35 @@ int main(int argc, char** argv)
         }
     }
 
+    // A non-interactive run (no console attached, or a test harness) must not
+    // block on a modal dialog.
+    interactive = GetConsoleWindow() != nullptr;
+
     // ---------------------------------------------------------------------
     // Locate the XEX.
     // ---------------------------------------------------------------------
-    std::string xexPath;
-    if (xexOverride != nullptr)
+    const std::string wanted = multiplayer ? kMultiplayerXex : kDefaultXex;
+
+    std::string xexPath = locate_xex(xexOverride, gameDir, wanted);
+
+    if (xexPath.empty())
     {
-        xexPath = xexOverride;
-    }
-    else
-    {
-        const std::string exeDir = executable_directory();
-        const char* candidates[] = {
-            "default.xex",
-            "..\\..\\Call of Duty 3\\default.xex",
-            "..\\..\\..\\Call of Duty 3\\default.xex",
-        };
-        for (const char* candidate : candidates)
-        {
-            std::string full = exeDir;
-            full += "\\";
-            full += candidate;
-            if (file_exists(full))
-            {
-                xexPath = full;
-                break;
-            }
-        }
+        xexPath = ask_for_xex(interactive);
+        if (!xexPath.empty())
+            save_xex(xexPath);
     }
 
-    if (xexPath.empty() || !file_exists(xexPath))
+    if (xexPath.empty())
+    {
+        std::fprintf(stderr, "[cod3] no game files found; cannot start.\n");
+        return 3;
+    }
+
+    if (!looks_like_xex(xexPath))
     {
         std::fprintf(stderr,
-            "[cod3] could not find default.xex.\n"
-            "        Pass it explicitly: COD3.exe --xex \"<path to default.xex>\"\n");
+            "[cod3] %s is not an Xbox 360 executable (no XEX2 header).\n",
+            xexPath.c_str());
         return 3;
     }
 
@@ -151,10 +356,9 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------------
     // Host window.
     // ---------------------------------------------------------------------
-    // The Xbox 360's GPU is an Xenos, and its command processor is not
-    // emulated by this runtime. The window is created up front anyway so that
-    // a graphics backend can be attached to it as that work lands; right now it
-    // simply hosts the guest's title bar and message loop.
+    // The Xbox 360's graphics stack is not emulated by this runtime, so the
+    // window is created up front to host the guest's message loop and to give
+    // a graphics backend somewhere to attach as that work lands.
     HWND hwnd = nullptr;
     if (createWindow)
     {
@@ -185,21 +389,10 @@ int main(int argc, char** argv)
     // Enter the recompiled title.
     // ---------------------------------------------------------------------
     std::fprintf(stderr,
-        "\n[cod3] entering recompiled entry point 0x%08X\n"
-        "[cod3] (this is where unimplemented kernel APIs and the missing GPU\n"
-        "[cod3]  command processor will surface)\n\n",
+        "\n[cod3] entering recompiled entry point 0x%08X\n\n",
         g_guest_entry_point);
 
-    // The Xbox 360 loader hands the title a context pointer and a reason code.
     PPCContext ctx = {};
-    ctx.r3.u32 = 0;            // context
-    ctx.r4.u32 = 0;            // reason / reason code
-    ctx.r5.u32 = 0;
-    ctx.r6.u32 = 0;
-    ctx.r2.u32 = 0;
-
-    // r1 is the guest stack pointer. The runtime reserved a dedicated stack
-    // region past the image; see cod3_load_image().
     ctx.r1.u32 = g_guest_stack_top;
 
     // The entry point is a normal PowerPC function reached by `bl`, so the link
@@ -209,12 +402,9 @@ int main(int argc, char** argv)
     // Point it at the image entry so the value is at least a real guest VA.
     ctx.lr = g_guest_entry_point;
 
-    // PowerPC requires r1 to be 16-byte aligned. The stack top is page aligned
-    // minus 0x10000, so it already satisfies this.
+    // PowerPC requires r1 to be 16-byte aligned.
     ctx.r1.u32 &= ~0xFu;
 
-    // Diagnostic dump of the launch state. Cheap, and it settles questions about
-    // what the CRT actually receives immediately rather than by inference.
     if (std::getenv("COD3_TRACE_LAUNCH") != nullptr)
     {
         std::fprintf(stderr,
@@ -237,8 +427,9 @@ int main(int argc, char** argv)
 
     if (hwnd != nullptr)
     {
-        MessageBoxA(hwnd, "The recomp reached the end of the entry point.\n\n"
-                          "See the console output for the kernel APIs it used.",
+        MessageBoxA(hwnd,
+                    "The recomp reached the end of the entry point.\n\n"
+                    "See the console output for the kernel APIs it used.",
                     "COD3 Recomp", MB_OK | MB_ICONINFORMATION);
     }
 
