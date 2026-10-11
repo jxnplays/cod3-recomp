@@ -77,6 +77,7 @@ add_library(recompiled_call_of_duty_3 STATIC
     ${COD3_RT_DIR}/kernel_imports_stubs.cpp
     runtime/cod3_runtime.h
     runtime/crash_handler.cpp
+    runtime/guest_entry_counters.cpp
     runtime/kernel_imports_core.cpp
     runtime/ppc_runtime.cpp
     runtime/simde_compat.cpp)
