@@ -42,15 +42,93 @@ uint32_t g_guest_stack_top = 0;
 uint32_t g_guest_heap_base = 0;
 uint32_t g_guest_heap_size = 0;
 
+// The CRT per-thread block, published into r13 before the guest entry point
+// runs. Built by cod3_populate_crt_thread_block(); see crt_thread_block.cpp for
+// why r13 has to arrive set rather than be computed by the guest.
+uint32_t g_crt_thread_block = 0;
+
+// Set when COD3_TRACE_TLS=2; see cod3_runtime.h.
+uint32_t* g_thread_io_word = nullptr;
+uint32_t g_thread_io_block_expected = 0;
+
+// The loader bump allocator (cod3_heap_alloc) is defined further down, next to
+// the heap region it carves from. Nothing here needs it.
+
+// Backing store for the loader allocator: a pointer and length into the guest
+// heap region, set by cod3_load_image().
+static uint8_t* g_heap_ptr = nullptr;
+static size_t g_heap_size = 0;
+
+// -----------------------------------------------------------------------------
+// Loader bump allocator over the guest heap
+// -----------------------------------------------------------------------------
+//
+// Loader-built structures have to live at guest virtual addresses, because the
+// guest dereferences them with its own load/store macros rather than through a
+// runtime helper. A host pointer from VirtualAlloc works until the first such
+// dereference and then faults on an address that is not a guest VA. That is not
+// hypothetical: publishing the CRT thread block through VirtualAlloc faulted the
+// guest at 0x80180110, a host address with guest high bits OR'd on.
+//
+// The region is owned by the loader for the life of the process, which is how
+// the real loader's boot structures behave: they are established before the title
+// runs and never released. Freeing is therefore a no-op, and callers that need
+// reclamation must not use this.
+//
+// The loader gets a DEDICATED region, disjoint from where NtAllocateVirtualMemory
+// hands memory out. Carving both from the same region looked harmless and was
+// not: the loader bump started at heap+0x1000 while g_vm_brk also started at the
+// heap base, so the CRT allocated a page that covered the thread block and then
+// zeroed it as newly allocated memory. The symptom was [r13+256] reading zero at
+// fault time with no instruction in the recompiled guest anywhere near a store to
+// it - the CRT was clearing memory it had just been given.
+//
+// The two regions are therefore explicitly separated and the layout is checked at
+// load time, so an overlap is reported rather than discovered much later as a
+// mysteriously zeroed structure.
+static size_t g_loader_brk = 0;
+
+// Size of the loader's private region at the base of the guest heap.
+constexpr size_t kLoaderRegionBytes = 64 * 1024;
+
+void* cod3_heap_alloc(uint32_t bytes, uint32_t tag)
+{
+    (void)tag;
+
+    if (bytes == 0)
+        bytes = 4;
+
+    if (g_heap_ptr == nullptr)
+    {
+        std::fprintf(stderr,
+            "[cod3] loader allocation of %u bytes requested before the guest"
+            " heap was mapped\n", bytes);
+        return nullptr;
+    }
+
+    // 16-byte align, matching what the rest of the runtime hands the guest.
+    const size_t aligned = (bytes + 0xF) & ~static_cast<size_t>(0xF);
+
+    if (g_loader_brk + aligned > kLoaderRegionBytes)
+    {
+        std::fprintf(stderr,
+            "[cod3] loader allocation of %u bytes overflows its private %zu"
+            " byte region (used %zu)\n",
+            bytes, kLoaderRegionBytes, g_loader_brk);
+        return nullptr;
+    }
+
+    void* result = g_heap_ptr + g_loader_brk;
+    g_loader_brk += aligned;
+
+    __builtin_memset(result, 0, aligned);
+    return result;
+}
+
 // The address the title is linked to load, and therefore the address the image
 // must occupy. This comes from the XEX IMAGE_BASE_ADDRESS optional header and
 // is filled in during cod3_load_image().
 uint32_t kGuestImageBase = 0x82000000;
-
-// Backing store for the pool allocator: a pointer and length into the guest
-// heap region, set by cod3_load_image(). See cod3_pool_alloc().
-static uint8_t* g_heap_ptr = nullptr;
-static size_t g_heap_size = 0;
 
 // The low-memory scratch region (null page). See cod3_load_image().
 void* g_low_scratch = nullptr;
@@ -1216,6 +1294,8 @@ bool cod3_load_image(const char* xex_path)
             "(published at 0x%08X)\n",
             slot, kCrtTlsSlotNumber);
     }
+
+    cod3_populate_crt_thread_block();
 
     // Dump the heap method-table slots the CRT consults while allocating. They
     // decide whether the allocator's retry loop terminates, so being able to

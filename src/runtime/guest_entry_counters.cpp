@@ -75,6 +75,8 @@ struct Counters
     unsigned long long s49bf0 = 0;
     unsigned long long s44b30 = 0;
     unsigned long long s52998 = 0;
+
+    unsigned long long close_calls = 0;
 };
 
 // A shared counter for the four functions sub_82344CF8 calls in order. Wrapping
@@ -496,7 +498,66 @@ COD3_COUNTED_WRAPPER(sub_82349BF0, s49bf0)
 COD3_COUNTED_WRAPPER(sub_82344B30, s44b30)
 COD3_COUNTED_WRAPPER(sub_82352998, s52998)
 
-// No override is installed for sub_823438C8 or sub_823438D8.
+// -----------------------------------------------------------------------------
+// sub_823438C8 - reads [r13+256] then [r11+332]
+// -----------------------------------------------------------------------------
+//
+// This is where boot stops. [r13+256] is a valid pointer immediately after the
+// loader builds the thread block, but by the time this runs it reads as zero,
+// so the second load faults at 0x14C (= 332).
+//
+// Nothing in the recompiled guest ever stores to [r13+256] - that search came up
+// empty. So either the CRT zeroes the whole block through a pointer it holds
+// elsewhere, or r13 itself has been changed. Recording r13 at the fault settles
+// that directly, which is why it is measured rather than reasoned about.
+//
+// NOTE: this override was removed once before because it distorted attribution.
+// It is safe now because the crash handler dumps the index neighbourhood: the
+// offset is checked against the neighbouring host address rather than trusted.
+extern "C" void __imp__sub_823438C8(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_823438C8)
+{
+    PPC_FUNC_PROLOGUE();
+
+    Counters& c = counters();
+    if (++c.close_calls <= 2)
+    {
+        std::fprintf(stderr,
+            "[entries] sub_823438C8 #%llu r13=0x%08X  [r13+256]=0x%08X\n",
+            c.close_calls, ctx.r13.u32,
+            cod3_load_u32(ctx.r13.u32 + 256));
+        if (g_thread_io_word != nullptr)
+        {
+            // Read through the guest helper, not by dereferencing the host
+            // pointer: the block is guest memory holding big-endian words, so a
+            // native read reports them byte-swapped and looks like corruption
+            // that is not there.
+            std::fprintf(stderr,
+                "[entries]   loader set 0x%08X at %p; it now reads 0x%08X\n",
+                g_thread_io_block_expected,
+                static_cast<void*>(g_thread_io_word),
+                cod3_load_u32(g_crt_thread_block + 256));
+
+            // Which words still hold what the loader wrote? If every one is gone
+            // the block was cleared wholesale; if only some are, something
+            // specific overwrote them. Worth being able to tell the two apart.
+            const uint32_t base = ctx.r13.u32;
+            unsigned zero = 0, set_ = 0;
+            for (uint32_t off = 0; off + 4 <= 17304; off += 4)
+                (cod3_load_u32(base + off) == 0 ? zero : set_)++;
+            std::fprintf(stderr,
+                "[entries]   block scan: %u words zero, %u non-zero"
+                " (+0=0x%08X)\n",
+                zero, set_, cod3_load_u32(base));
+        }
+        std::fflush(stderr);
+    }
+
+    __imp__sub_823438C8(ctx, base);
+}
+
+// No override is installed for sub_823438D8.
 //
 // An override was tried here and it made attribution worse rather than better:
 // adding a strong definition puts MY function at sub_823438C8's host address,

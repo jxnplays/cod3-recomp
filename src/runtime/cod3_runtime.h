@@ -233,6 +233,46 @@ uint32_t cod3_runtime_service_address(int service);
 // at the first instruction of heap setup.
 void cod3_populate_loader_globals();
 
+// The CRT per-thread block that r13 points at. PowerPC on the 360 reserves r13
+// for this, and nothing on the boot path ever assigns it - only two thread
+// trampolines write it, and neither runs during boot - so the loader has to
+// build the block before calling the guest entry point.
+// See src/runtime/crt_thread_block.cpp for the layout and how it was derived.
+void cod3_populate_crt_thread_block();
+uint32_t cod3_crt_thread_block();
+
+// Published by cod3_populate_crt_thread_block(); 0 until it has run.
+extern uint32_t g_crt_thread_block;
+
+// The [r13+256] word, recorded when COD3_TRACE_TLS=2. The crash handler reports
+// its current value alongside the r13 the faulting code saw, which distinguishes
+// "the pointer was cleared" from "r13 moved" without having to instrument every
+// store that could be responsible.
+extern uint32_t* g_thread_io_word;
+
+// The value cod3_populate_crt_thread_block() stored into that word, so a later
+// change is reported as a change rather than as a bare absolute.
+extern uint32_t g_thread_io_block_expected;
+
+// Bump allocator over the guest heap region, for loader structures that must be
+// reachable by the guest at real guest virtual addresses.
+//
+// This exists because VirtualAlloc is the wrong tool here. The loader builds
+// structures the guest then dereferences with its own load/store macros, so the
+// pointer has to be a guest VA inside the mapped heap, not a host address.
+// Returns nullptr if the region is exhausted.
+//
+// cod3_pool_free() is a no-op for anything obtained from here: the region is
+// owned by the loader for the life of the process, which matches how the real
+// loader's boot structures behave.
+void* cod3_heap_alloc(uint32_t bytes, uint32_t tag);
+
+// Size of the loader's private region at the base of the guest heap.
+// NtAllocateVirtualMemory starts handing memory out above it, so the two never
+// overlap: the CRT zeroes what it allocates, which would destroy loader
+// structures if they shared a region.
+extern const size_t kLoaderRegionBytes;
+
 // Allocate (once per field) a zeroed guest page to stand in for an XEX header
 // field this title does not carry. The Xbox 360 kernel answers such queries with
 // a pointer to a default value rather than failing, and the CRT dereferences the

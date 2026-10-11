@@ -55,26 +55,21 @@ static RtlNtStatusToDosError_fn get_ntstatus_to_dos_error()
 }
 
 // -----------------------------------------------------------------------------
-// Memory: pool allocator
+// Memory: loader allocator
 // -----------------------------------------------------------------------------
 //
-// Xbox 360 pool tags are packed as four bytes; the game is fond of asserting on
-// them, so we keep the tag alongside each block for the shutdown report.
+// Xbox 360 pool tags are packed as four bytes. The tag is still passed through
+// for the shutdown report, but it is no longer stored in a header.
 //
-// The header below is HOST byte order, deliberately. It is runtime-private
-// metadata that the guest never reads: only the payload beyond it is
-// guest-visible, and the guest reaches that payload through the returned
-// pointer. Using guest (big-endian) byte order here would corrupt every block.
-
-struct PoolBlock
-{
-    uint32_t tag;
-    uint32_t size;
-    uint32_t magic;
-    uint32_t pad;
-};
-
-constexpr uint32_t POOL_MAGIC = 0x504F4F4Cu; // 'POOL'
+// That header used to be a PoolBlock in front of every payload, host byte
+// order, which only worked while allocations came from VirtualAlloc. They now
+// come from the guest heap, so there is nothing in front of the payload: the
+// guest dereferences these addresses with its own load/store macros and any
+// header would be part of the guest's view of its own heap.
+//
+// The allocation itself lives in ppc_runtime.cpp, next to g_heap_ptr, because it
+// is a bump pointer over the mapped heap region and needs those definitions.
+// This is the thin wrapper the rest of the runtime calls.
 
 static size_t g_pool_live = 0;
 
@@ -85,23 +80,26 @@ void* cod3_pool_alloc(uint32_t bytes, uint32_t tag, uint32_t /*flags*/)
     if (bytes == 0)
         bytes = 4;
 
-    // Always 16-byte align so guest code can use quadword access safely.
-    const size_t total = sizeof(PoolBlock) + bytes;
-    void* raw = VirtualAlloc(nullptr, total, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (raw == nullptr)
-    {
-        std::fprintf(stderr, "[cod3] pool alloc of %u bytes (tag %08X) failed\n",
-                     bytes, tag);
-        return nullptr;
-    }
+    // NOTE: this deliberately allocates from the guest heap region, NOT from
+    // VirtualAlloc. The result is a guest virtual address, because the callers
+    // hand it to the guest: sub_82352998 stores the pointer into a global, and
+    // every later access is a guest load or store at that address. A host
+    // pointer would work until the first such access and then fault on an
+    // address that is not a guest VA.
+    //
+    // VirtualAlloc was used here previously. It happened to work for the
+    // allocations made during NtAllocateVirtualMemory setup because those
+    // results were stored and compared but rarely dereferenced through the
+    // guest's own load/store macros. Publishing the CRT thread block through it
+    // made that assumption fail immediately: the guest faulted at 0x80180110,
+    // which is a host address with the guest's high bits OR'd on.
+    if (bytes == 0)
+        bytes = 4;
 
-    auto* block = static_cast<PoolBlock*>(raw);
-    block->tag = tag;
-    block->size = total;
-    block->magic = POOL_MAGIC;
-    block->pad = 0;
-    g_pool_live++;
-    return static_cast<uint8_t*>(raw) + sizeof(PoolBlock);
+    void* result = cod3_heap_alloc(bytes, tag);
+    if (result != nullptr)
+        g_pool_live++;
+    return result;
 }
 
 void cod3_pool_free(void* ptr)
@@ -109,19 +107,15 @@ void cod3_pool_free(void* ptr)
     if (ptr == nullptr)
         return;
 
-    auto* block = reinterpret_cast<PoolBlock*>(
-        static_cast<uint8_t*>(ptr) - sizeof(PoolBlock));
-    if (block->magic != POOL_MAGIC)
-    {
-        // Not ours: the title has handed us a pointer it allocated itself or one
-        // that has already been freed. Ignore rather than corrupt the heap.
-        std::fprintf(stderr, "[cod3] pool free of foreign pointer %p ignored\n", ptr);
-        return;
-    }
-
-    block->magic = 0;
-    VirtualFree(block, 0, MEM_RELEASE);
-    g_pool_live--;
+    // cod3_pool_alloc now carves from the guest heap rather than calling
+    // VirtualAlloc, so there is no PoolBlock header in front of the payload and
+    // the magic check would read guest memory that belongs to the title.
+    //
+    // The region is a bump allocator owned by the loader for the life of the
+    // process, so there is nothing to release. Freeing is a no-op, which is also
+    // what a real loader's boot structures do. Silently ignoring a free is safe
+    // here precisely because nothing is reclaimed.
+    (void)ptr;
 }
 
 // The recompiler declares kernel imports with PPC_EXTERN_FUNC (a plain C++
@@ -640,7 +634,14 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     (void)attr;
 
     if (g_vm_brk == 0)
-        g_vm_brk = g_guest_heap_base;
+    {
+        // Start above the loader's private region at the base of the heap. The
+        // loader keeps structures the CRT must never be told it owns - the CRT
+        // thread block among them - and NtAllocateVirtualMemory zeroes what it
+        // hands out, so overlapping the two destroys them silently. See
+        // cod3_heap_alloc().
+        g_vm_brk = g_guest_heap_base + kLoaderRegionBytes;
+    }
 
     // Size: prefer r7 when non-zero, else the value the caller passed by
     // pointer (the title reserves whole regions this way).

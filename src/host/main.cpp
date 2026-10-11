@@ -395,6 +395,20 @@ int main(int argc, char** argv)
     PPCContext ctx = {};
     ctx.r1.u32 = g_guest_stack_top;
 
+    // r13 is the PowerPC per-thread data register. On the 360 the XEX loader
+    // builds the CRT thread block and passes it to the title before _xstart
+    // runs; nothing in the guest assigns r13 on the boot path, so it has to
+    // arrive set. Left at zero, the first CRT call that follows [r13+256] faults
+    // on address 0x100. See src/runtime/crt_thread_block.cpp.
+    ctx.r13.u32 = cod3_crt_thread_block();
+    if (ctx.r13.u32 == 0)
+    {
+        std::fprintf(stderr,
+            "[cod3] FATAL: the CRT thread block is not built; r13 would be 0 and"
+            " the CRT will fault at 0x100. Was cod3_load_image() run?\n");
+        return 1;
+    }
+
     // The entry point is a normal PowerPC function reached by `bl`, so the link
     // register must look like a return address. Nothing returns through it, but
     // `mflr r12` at the top of _xstart reads it and stores r12 to the stack, so
@@ -410,11 +424,12 @@ int main(int argc, char** argv)
         std::fprintf(stderr,
             "[cod3] launch state: r1=0x%08X r2=0x%08X r3=0x%08X r4=0x%08X\n"
             "[cod3]              r5=0x%08X r6=0x%08X r12=0x%08X lr=0x%08X\n"
-            "[cod3]   image 0x%08X  stack 0x%08X..0x%08X  heap 0x%08X\n",
+            "[cod3]   image 0x%08X  stack 0x%08X..0x%08X  heap 0x%08X\n"
+            "[cod3]   r13 (CRT thread block) 0x%08X\n",
             ctx.r1.u32, ctx.r2.u32, ctx.r3.u32, ctx.r4.u32,
             ctx.r5.u32, ctx.r6.u32, ctx.r12.u32, static_cast<uint32_t>(ctx.lr),
             kGuestImageBase, g_guest_stack_base, g_guest_stack_top,
-            g_guest_heap_base);
+            g_guest_heap_base, ctx.r13.u32);
         std::fflush(stderr);
     }
 
