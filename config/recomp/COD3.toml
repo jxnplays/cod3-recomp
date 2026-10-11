@@ -81,6 +81,29 @@ name = "HeapSeedNodeEntry"
 address = 0x82357D44
 registers = ["r29", "r30", "r28"]
 
+# The actual exit test for the recursion, and the instruction immediately after
+# the recursive call returns:
+#
+#   0x82357D90  bl   sub_82357E48      ; recurse
+#   0x82357D98  lwzx r11,r29,r30      ; has the list head been set?
+#   0x82357DA4  bc   <give up>         ; non-zero -> stop recursing
+#
+# If r11 is still zero here the walk can never terminate, because the only
+# thing that would set it is further down this same function.
+[[midasm_hook]]
+name = "HeapSeedExitTest"
+address = 0x82357D98
+registers = ["r11", "r29", "r30"]
+
+# Control: this address is definitely executed - sub_823478F0 is entered three
+# times during boot, and HeapAllocEntry (hooked at 0x823478F0) does report. If
+# this one stays silent while that one fires, the silence is meaningful; if
+# both are silent, the hooks are not wired the way the logs suggest.
+[[midasm_hook]]
+name = "HeapControlProbe"
+address = 0x82357E74
+registers = ["r30", "r31"]
+
 # The store that actually seeds the free list:
 #   loc_82357DD8:  stwx r28,r29,r30      ; [r29+r30] = r28
 # If this is never reached the head stays zero and the walk cannot terminate.
@@ -88,6 +111,8 @@ registers = ["r29", "r30", "r28"]
 name = "HeapListSeedStore"
 address = 0x82357DD8
 registers = ["r28", "r29", "r30"]
+
+
 
 
 

@@ -227,6 +227,29 @@ void HeapListSeedGate(PPCRegister& r3, PPCRegister& r4)
 
 static void (*g_heap_slot_dumper)() = nullptr;
 
+// The exit test for the sub_82357E48 / sub_82357D08 recursion:
+//
+//   0x82357D90  bl   sub_82357E48      ; recurse
+//   0x82357D98  lwzx r11,r29,r30      ; has anything seeded the list yet?
+//   0x82357DA4  bc   <give up>         ; non-zero -> stop
+//
+// r11 is the value just loaded. If it stays zero the pair recurses until the
+// guest stack is exhausted, because the only writer of that slot is further
+// down this same function - which is never reached.
+//
+// Wired up by the HeapSeedExitTest entry in config/recomp/COD3.toml.
+void HeapSeedExitTest(PPCRegister& r11, PPCRegister& r29, PPCRegister& r30)
+{
+    static int calls = 0;
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || calls >= 12)
+        return;
+    ++calls;
+
+    std::fprintf(stderr,
+        "[heap-exit] #%d slot=[0x%08X] r11=0x%08X r29=0x%08X r30=0x%08X\n",
+        calls, r29.u32 + r30.u32, r11.u32, r29.u32, r30.u32);
+}
+
 // sub_82357D08 re-enters itself through sub_82357E48, so counting entries at
 // loc_82357D44 - the point where it decides whether to seed the list - is the
 // direct measurement of recursion depth. A growing count alongside a static

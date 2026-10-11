@@ -301,6 +301,26 @@ void cod3_install_crash_handler()
                 reinterpret_cast<uintptr_t>(rec->ExceptionAddress)),
             static_cast<unsigned long long>(bad));
 
+        // Attribute the host PC even here. The unhandled filter normally does
+        // this, but it cannot run once the stack is gone, and without it the
+        // report names no guest address at all - which is the whole point of
+        // having one.
+        {
+            uint32_t guest = 0;
+            uint64_t distance = 0;
+            if (attribute_host_pc(rec->ExceptionAddress, &guest, &distance))
+            {
+                std::fprintf(stderr,
+                    "[cod3]   guest addr  : 0x%08X  (sub_%.8X, +%llu bytes)\n",
+                    guest, guest, static_cast<unsigned long long>(distance));
+            }
+            else
+            {
+                std::fprintf(stderr,
+                    "[cod3]   guest addr  : not inside a translated function\n");
+            }
+        }
+
         print_guest_call_stack();
         std::fflush(stderr);
 
