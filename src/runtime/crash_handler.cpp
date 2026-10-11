@@ -261,4 +261,46 @@ void cod3_install_crash_handler()
         std::fflush(stderr);
         return EXCEPTION_EXECUTE_HANDLER;
     });
+
+    // A vectored handler runs before the unhandled one and, crucially, before
+    // the thread's stack has been exhausted. A guest stack overflow walks off
+    // the bottom of the host stack, and by the time an unhandled-exception
+    // filter runs there is no stack left to format the report from - which is
+    // exactly the silent death this was added to diagnose.
+    AddVectoredExceptionHandler(1, [](EXCEPTION_POINTERS* info) -> LONG {
+        const EXCEPTION_RECORD* rec = info->ExceptionRecord;
+
+        const uintptr_t bad =
+            rec->NumberParameters >= 2
+                ? static_cast<uintptr_t>(rec->ExceptionInformation[1])
+                : 0;
+
+        // A fault whose target is a plausible guest address is the guest's
+        // problem and is left for the full report.
+        if (bad >= kGuestImageBase && bad < kGuestImageBase + 0x10000000ull)
+            return EXCEPTION_CONTINUE_SEARCH;
+
+        std::fflush(stdout);
+        std::fprintf(stderr,
+            "\n"
+            "================================================================\n"
+            "[cod3] FATAL (vectored): %s (0x%08X)\n"
+            "[cod3]   host PC     : 0x%016llX\n"
+            "[cod3]   fault addr  : 0x%llX\n"
+            "[cod3]   this is outside the guest address space, which for a\n"
+            "[cod3]   stack overflow means the guest ran off the bottom of the\n"
+            "[cod3]   host stack and the unhandled filter could not run.\n",
+            describe_exception(rec->ExceptionCode),
+            static_cast<uint32_t>(rec->ExceptionCode),
+            static_cast<unsigned long long>(
+                reinterpret_cast<uintptr_t>(rec->ExceptionAddress)),
+            static_cast<unsigned long long>(bad));
+
+        print_guest_call_stack();
+        std::fflush(stderr);
+
+        // Terminate rather than continue: once the stack is gone there is
+        // nothing sensible left to return to.
+        return EXCEPTION_EXECUTE_HANDLER;
+    });
 }

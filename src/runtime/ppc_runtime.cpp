@@ -862,6 +862,27 @@ bool cod3_load_image(const char* xex_path)
     // Publish the loader-populated globals the CRT walks during boot.
     cod3_populate_loader_globals();
 
+    // Dump the heap method-table slots the CRT consults while allocating. They
+    // decide whether the allocator's retry loop terminates, so being able to
+    // read them at fault time is worth more than re-deriving the addresses.
+    if (std::getenv("COD3_DUMP_HEAP_SLOTS") != nullptr)
+    {
+        struct { uint32_t va; const char* what; } slots[] = {
+            { 0x8291F438, "heap method slot (published by the runtime)" },
+            { 0x8291F6C8, "method pointer read by sub_8235A688" },
+            { 0x8291F6CC, "gate checked before that call" },
+            { 0x82BEA9C0, "page heap descriptor" },
+            { 0x82BEAAE4, "descriptor written by sub_8234BE28 (-21788)" },
+            { 0x82BEAAE8, "descriptor written by sub_8234BE28 (-21784)" },
+        };
+        std::fprintf(stderr, "[cod3] heap/descriptor slots:\n");
+        for (const auto& s : slots)
+        {
+            std::fprintf(stderr, "    0x%08X = 0x%08X   %s\n", s.va,
+                         cod3_load_u32(s.va), s.what);
+        }
+    }
+
     std::fprintf(stderr,
         "[cod3] loaded guest image at 0x%08X (base=0), image 0x%08X bytes, "
         "entry 0x%08X, %zu exported symbols\n",
