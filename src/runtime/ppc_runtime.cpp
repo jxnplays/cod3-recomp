@@ -271,6 +271,63 @@ uint32_t cod3_runtime_service_address(int service)
            static_cast<uint32_t>(service * sizeof(void*));
 }
 
+// -----------------------------------------------------------------------------
+// NULL dispatch trap region
+// -----------------------------------------------------------------------------
+//
+// Dispatching through a null or near-null function pointer does NOT land in the
+// indirect call table. The lookup is:
+//
+//   table + (uint32_t(y) - PPC_CODE_BASE) * 2
+//
+// For y == 0 that is 0x82000000 + 0xC98000 + (0 - 0x820A0000) * 2, which with
+// 32-bit wraparound resolves to 0x17EB58000 - about 380 MB past the table and
+// outside every mapping. The result is an immediate access violation that says
+// nothing about the cause.
+//
+// The CRT dispatches through vtables that the loader populates, and dispatches
+// through null entries whenever one is unset. Mapping that far address and
+// filling it with the same trap turns those into a reported "unresolved call"
+// instead of a bare crash, which is what makes the boot path diagnosable.
+//
+// Only a small span is needed: small y values cluster at the base of this
+// region, spaced 8 bytes apart.
+void cod3_map_null_dispatch_trap()
+{
+    if (g_indirect_table_size == 0)
+        return;
+
+    // Where y == 0 resolves to.
+    const uint64_t base =
+        static_cast<uint64_t>(g_indirect_table_base) +
+        ((0ull - 0x820A0000ull) & 0xFFFFFFFFull) * 2ull;
+
+    // The computed address is far outside the 32-bit guest space, but on x64 it is
+    // an ordinary legal host address. VirtualAlloc is the authority on whether
+    // it can actually be reserved, so there is no separate range check to get
+    // wrong.
+    constexpr size_t kTrapSpan = 0x100000; // 1 MiB, plenty for small targets
+    void* mem = VirtualAlloc(reinterpret_cast<void*>(static_cast<uintptr_t>(base)),
+                             kTrapSpan, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (mem == nullptr)
+    {
+        std::fprintf(stderr,
+            "[cod3] could not map the NULL dispatch trap at 0x%llX "
+            "(Win32 error %lu); dispatching through null will fault\n",
+            static_cast<unsigned long long>(base), GetLastError());
+        return;
+    }
+
+    auto** slots = reinterpret_cast<PPCFunc**>(mem);
+    const size_t count = kTrapSpan / sizeof(void*);
+    for (size_t i = 0; i < count; ++i)
+        slots[i] = cod3_unresolved_indirect_target;
+
+    std::fprintf(stderr,
+        "[cod3] NULL dispatch trap mapped at 0x%llX, 0x%zX bytes\n",
+        static_cast<unsigned long long>(base), kTrapSpan);
+}
+
 // Guest addresses of every symbol the XEX exports. Populated by
 // cod3_load_image(); cod3_resolve_private_export() indexes into it by ordinal.
 static std::vector<uint32_t> g_exported_symbols;
@@ -528,6 +585,8 @@ bool cod3_load_image(const char* xex_path)
 
         // Bind the runtime services the kernel APIs hand back to the guest.
         cod3_register_runtime_services();
+
+        cod3_map_null_dispatch_trap();
     }
 
     // base == 0 is required: the generated code forms every reference as

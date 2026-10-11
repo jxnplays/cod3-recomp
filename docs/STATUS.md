@@ -6,7 +6,7 @@ every claim is reproducible with the commands in [SETUP.md](SETUP.md).
 **Summary:** the static recompilation is complete and verified end to end. The
 binary launches, loads the real Xbox 360 executable, and executes recompiled
 PowerPC code. **It does not display the game.** The blocker is specific, is
-understood, and is documented below — it is not a toolchain problem.
+understood, and is documented below â€” it is not a toolchain problem.
 
 ---
 
@@ -17,52 +17,86 @@ understood, and is documented below — it is not a toolchain problem.
 | Dump analysis | **Done** | XEX/PE parsed, 179 imports resolved, 8 register helpers located ([ANALYSIS.md](ANALYSIS.md)) |
 | XenonRecomp toolchain built from source | **Done** | `XenonRecomp.exe`, `XenonAnalyse.exe` built with clang-cl 20.1.8 |
 | Jump table detection | **Done** | 323 tables detected |
-| XEX → C++ translation | **Done** | 29,731 functions, 120 files, 98.4 MB, 3,109,564 lines, exit 0 |
+| XEX â†’ C++ translation | **Done** | 29,731 functions, 120 files, 98.4 MB, 3,109,564 lines, exit 0 |
 | Compiles to native x64 | **Done** | `build/host/COD3.exe`, 24.2 MB, links clean |
-| Loads the real guest image | **Done** | Mapped at its real VA `0x82000000`, base = 0 |
-| Runs the title's boot path | **Done** | Executes the CRT, calls kernel APIs, completes allocations |
-| Virtual memory manager | **Done** | `NtAllocateVirtualMemory` returns real, backed guest memory |
-| Xbox 360 kernel API layer | **Partial** | 32 hand-written, 147 generated stubs, 179 total |
-| Crash attribution | **Done** | Faults map back to exact guest addresses and validity |
-| CRT page-heap initialisation | **In progress** | Faults at a low address during page heap setup |
+| Guest memory model | **Done** | Image mapped at its real VA, indirect call table built, byte order correct |
+| Runs the title's boot path | **Done** | Reaches CRT main init (`sub_82349A98`) and its callees |
+| Virtual memory manager | **Done** | `NtAllocateVirtualMemory` / query / free |
+| XEX header + loader globals | **Done** | `RtlImageXexHeaderField`, loader context chain published |
+| Thread local storage | **Done** | `KeTlsAlloc`/`Get`/`Set`/`Free` with per-thread slots |
+| Xbox 360 kernel API layer | **Partial** | 37 hand-written, 142 generated stubs, 179 total |
+| Crash + call-chain attribution | **Done** | Faults map to guest addresses, and the host stack maps to a guest call chain |
+| CRT vtable dispatch | **In progress** | Current frontier â€” see below |
 | **Renders the game** | **Not working** | See below |
 
+## Boot path progress
+
+Getting the title to run at all required five non-obvious fixes. Each was found
+from evidence rather than guesswork, and each is a prerequisite for the next.
+
+1. **Guest memory model.** The recompiled code forms every reference as
+   `base + guest_va`, where `guest_va` is a full 32-bit Xbox 360 virtual address
+   (PowerPC registers hold real VAs). Mapping the image at an arbitrary address
+   makes every access compute `base + 2 GB` and land outside the mapping. The
+   image is now mapped at `0x82000000` so `base == 0`.
+
+2. **Image sizing.** The allocation must cover the PE `SizeOfImage`
+   (`0xC98000`), not the XEX `imageSize` (`0xC30000`); `.reloc` ends at
+   `0xC4D208` and the title touches memory past the XEX figure.
+
+3. **Guest byte order.** The guest is big-endian and XenonRecomp's generated code
+   byte-swaps every access. The runtime is not generated code, so it must do the
+   same. This was silently wrong everywhere: `0x83CA0000` came back as
+   `0x0000CA83`, which presented as a wild pointer far from the real cause.
+
+4. **The indirect call table.** PowerPC has no direct calls. XenonRecomp resolves
+   every indirect call through a perfect-hash table:
+
+   ```
+   *(PPCFunc**)(base + PPC_IMAGE_BASE + PPC_IMAGE_SIZE
+                + (uint32_t(guest) - PPC_CODE_BASE) * 2)
+   ```
+
+   With `base == 0` that table occupies `0x82C30000`â€“`0x83626370`, about 10 MiB
+   *outside* the image. Without it, every indirect call in the game faults. This
+   is not a detail; it is on the hottest path in the entire port.
+
+5. **Argument decoding.** `NtAllocateVirtualMemory`'s `r3` is a pointer to the
+   caller's `BaseAddress` slot, not a pointer to a pointer. The extra
+   dereference followed an unset slot into address 0.
+
+With those in place the port progresses through the CRT: loader globals â†’
+`RtlImageXexHeaderField` â†’ heap setup â†’ `NtAllocateVirtualMemory` (twice,
+distinct regions) â†’ `KeTlsAlloc` â†’ CRT main init.
+
+### Verified run output
 ### Verified run output
 
 ```
-[cod3] loaded guest image at 0x82000000 (base=0), image 0x00C30000 bytes,
-       entry 0x82344D00, 179 exported symbols
+[cod3] PE SizeOfImage 0xC98000 exceeds XEX imageSize 0xC30000; extending the mapping
+[cod3] indirect call table at 0x82CA0000, 0x9F6378 bytes, 29728 functions mapped
+[cod3] runtime services at 0x82A96200 (table slots 1305664..1305665)
+[cod3] NULL dispatch trap mapped at 0x17EB60000, 0x100000 bytes
+[cod3] captured 14 XEX optional headers for the title to query
+[cod3] loader globals published: [0x82001288] -> 0x84696378 -> 0x84697378
 
 [cod3] entering recompiled entry point 0x82344D00
+[cod3] RtlImageXexHeaderField(0x00020401) -> 0x85696378
 [cod3] NtAllocateVirtualMemory: flags=0x60002000 size=0x1000 -> 0x83CA0000
 [cod3] NtAllocateVirtualMemory: flags=0x60001000 size=0x1000 -> 0x83CA1000
-
-[cod3] FATAL: access violation (0xC0000005)
-[cod3]   guest addr  : 0x82347340  (sub_82347340, +3376 bytes)
-[cod3]   fault addr  : 0xCACF - NOT a valid guest address
-[cod3]   write of address 0x000000000000CACF
+[cod3] KeTlsAlloc -> slot 0
 ```
 
-The port executes the title's real boot path, calls into the kernel, gets two
-distinct successful allocations back, and faults later in the CRT's page heap
-setup. The exact faulting instruction is:
+Guest call chain at the point of failure, recovered by the crash handler:
 
-```asm
-lwz  r11,80(r31)     ; r11 = heap descriptor base  (should be a guest pointer)
-addi r11,r11,384     ; r11 += 0x180
-addic. r10,r10,-1    ; unrolled 128-iteration loop
-stw  r11,0(r11)      ; <-- fault: writes through r11
 ```
-
-`r11` holds `0xCA43`, i.e. a small value where a guest virtual address belongs.
-That slot is written earlier by `stw r22,80(r31)` from `sub_8234EBA0`, so the
-descriptor originates there rather than from the virtual memory calls.
+#6  sub_821C7400    <- faulting function
+#7  sub_82349A98    <- CRT main init
+#8  sub_82344D00    <- XEX entry point (_xstart)
+```
 
 ---
 
-## Why it does not render
-
-### Blocker 1 — no graphics boundary exists (the fundamental one)
 
 Call of Duty 3 imports **zero Direct3D functions**. The Xbox 360's graphics
 stack (NGL, the Xenos D3D9 derivative) is statically linked into the 5 MB
@@ -70,7 +104,7 @@ stack (NGL, the Xenos D3D9 derivative) is statically linked into the 5 MB
 `XexGetProcedureAddress`.
 
 So there is no D3D9/D3D11 call to intercept, no wrapper to write, and no
-"modern renderer" to substitute. The Xbox 360 GPU is not a display controller —
+"modern renderer" to substitute. The Xbox 360 GPU is not a display controller â€”
 it is a general-purpose vector processor driven by a command packet stream over
 a register bus, and that bus is currently discarded.
 
@@ -81,62 +115,80 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 — CRT page heap initialisation (root cause identified)
+### Blocker 2 â€” CRT vtable dispatch (current frontier)
 
-The boot path runs, but the CRT faults while setting up its page heap:
-
-```
-[cod3]   guest addr  : 0x82347340  (sub_82347340, +3376 bytes)
-[cod3]   fault addr  : 0xCACF - NOT a valid guest address
-[cod3]   write of address 0x000000000000CACF
-```
-
-The faulting instruction is:
+The boot path now reaches the CRT's main init routine (`sub_82349A98`) and stops
+in a dispatch loop that walks a loader-populated structure:
 
 ```asm
-lwz  r11,80(r31)     ; heap descriptor base
-addi r11,r11,0x180
-addic. r10,r10,-1
-stw  r11,0(r11)      ; <-- fault: writes through r11
+; sub_82349CC0 region
+lwz   r11,0(r31)      ; r11 = [r31]      a function pointer in a descriptor
+cmplwi r11,0
+beq   skip            ; 0 means "not set"
+cmpwi r11,-1
+beq   skip            ; -1 means "not set"
+mtctr r11
+bctrl                 ; <-- dispatch
 ```
 
-`r11` holds `0xCA4F`, a small value where a guest virtual address belongs.
+Exact call sites, recovered from the runtime's indirect-call diagnostics:
+`0x82349B50`, `0x82349B04`, `0x82349AC8`, `0x82349BC8`.
 
-**Root cause.** The descriptor slot `[r31+80]` is a *copy* of the return value of
-a call that the CRT makes through `XexGetProcedureAddress`. `XexGetXEntryInfo` is
-**not** a kernel export — it does not appear in the `xboxkrnl` ordinal table at
-all. It is a *private export of the title's own XEX*, so the CRT looks it up
-dynamically at startup. The runtime's `XexGetProcedureAddress` currently returns
-0, so the CRT obtains a null function pointer, never fills the descriptor, and
-later writes through it.
+**What populates it.** The Xbox 360 XEX loader publishes a block of globals in
+the title's `.rdata` before the entry point runs. On hardware the CRT never
+touches an unset slot because the loader fills it. In the raw XEX that block is
+all zeros, and this port has to reconstruct enough of it for the CRT to proceed.
 
-Two things follow:
+The chain has been recovered from the guest's own code
+(`sub_82349CC0`, `build/ppc/ppc_recomp.55.cpp`):
 
-1. The XEX **export table** must be parsed and indexed by ordinal, and
-   `XexGetProcedureAddress` must return real guest addresses from it. The table
-   location is recorded in the XEX security header; the offsets have not yet
-   been confirmed against this image.
-2. Only then does the CRT have the XEX entry information it needs — TLS
-   (`XEX_HEADER_TLS_INFO` = `0x1558`), heap sizes and page heap flags.
+```
+[0x82001288]  ->  A          (loader context slot, published by cod3_populate_loader_globals)
+[A + 0x00]    ->  B
+[B + 0x58]    ->  image handle
+RtlImageXexHeaderField(handle, XEX_HEADER_DEFAULT_HEAP_SIZE) -> pointer; [pointer] must be 0
+```
 
-A note on a dead end: mapping a low "null page" so bogus pointers land somewhere
-harmless **cannot work here**. 64-bit Windows permanently reserves the first
-64 KB and rejects any mapping below `0x10000` with `ERROR_INVALID_PARAMETER`
-(87). `0xCACF` is below that boundary, so a guest access there can never be made
-valid and always faults. This is a platform constraint, not a runtime choice.
+That part works. What does not yet work is the wider descriptor graph the CRT
+walks afterwards: it builds a 48-byte vtable (`[0] = 48`, the rest zero) and
+dispatches through its entries, which the loader would have populated.
 
-### Blocker 3 — 14 unimplemented VMX instructions
+**Diagnostics that make this tractable.** Three tools were added to avoid guessing:
+
+* The unresolved-indirect-call trap reports `ctx.lr`, the guest return address,
+  which names the exact call site. Looking that up in `build/ppc` shows the load
+  that produced the bad pointer.
+* The crash handler walks the **host** call stack and maps each frame back to a
+  guest function, producing a full guest call chain at the point of failure.
+* A scan of the generated code finds every address the guest reads relative to a
+  kernel base, yielding the 1,115 global addresses the CRT consults.
+
+A NULL dispatch is handled specially: it does not land in the table at all, but
+resolves to `0x17EB60000`, so that region is mapped and filled with the same
+trap. Dispatching through an unset vtable entry therefore reports itself instead
+of faulting opaquely.
+
+### Known platform constraint
+
+Mapping a low "null page" so that small bogus pointers land somewhere harmless
+**cannot work on 64-bit Windows**: the first 64 KB is permanently reserved and
+any mapping below `0x10000` is rejected with `ERROR_INVALID_PARAMETER` (87).
+Guest addresses below that boundary can never be made valid. This is a property
+of the host OS, not a runtime choice, and it is why the CRT's unset descriptor
+must be fixed at the source rather than masked in memory.
+
+### Blocker 3 â€” 14 unimplemented VMX instructions
 
 The translator does not implement 33 distinct VMX/scalar opcodes. Because
 XenonRecomp emits each unimplemented opcode once as a helper, this collapses to
-**14 `__builtin_debugtrap()` sites** in the output — a tractable, well-defined
+**14 `__builtin_debugtrap()` sites** in the output â€” a tractable, well-defined
 task, but each one traps if reached. Full list in
-[ANALYSIS.md §8](ANALYSIS.md).
+[ANALYSIS.md Â§8](ANALYSIS.md).
 
 The heavy hitters are `vslh` (874 hits), `vsrah` (541), `vsubshs` (522),
 `vspltish` (330), `vmaxsh` (231) and `vandc` (148).
 
-### Blocker 4 — ~700 jump table mis-detections
+### Blocker 4 â€” ~700 jump table mis-detections
 
 XenonRecomp reported errors such as:
 
@@ -162,7 +214,7 @@ Nothing in this repository pretends to work when it does not:
 * `ExCreateThread` / `KeCreateThread` spawn real Win32 threads, but guest
   thread stacks are allocated from the same pool as the game and are not
   wired to a scheduler; the Xbox 360 thread model is not modelled.
-* `ObReferenceObjectByHandle` succeeds and returns the handle back unchanged —
+* `ObReferenceObjectByHandle` succeeds and returns the handle back unchanged â€”
   there is no object namespace, so handle validation does not happen.
 * `DbgPrint` logs the call but deliberately does **not** pass guest format
   strings to `printf`.
@@ -176,27 +228,26 @@ Nothing in this repository pretends to work when it does not:
 
 ## Ordered path to a playable build
 
-1. **Parse the XEX export table and implement `XexGetProcedureAddress`.** This
-   is the identified root cause of the current boot failure: the CRT resolves
-   `XexGetXEntryInfo` — a private export of the title's own XEX — through it, and
-   currently gets 0. *Smallest step with the largest gain, and now precisely
-   specified.*
+1. **Finish the loader context graph.** The CRT walks a descriptor chain the
+   Xbox 360 XEX loader populates before the entry point. The first links are
+   published; the 48-byte vtable and its dispatch entries are not. The
+   diagnostics above identify the exact call sites, and `cod3_populate_loader_globals`
+   is the single place to extend. *Smallest step with the largest gain.*
 2. **Implement the 14 VMX helpers.** Each is a single PowerPC instruction with a
    known semantic; they can be written directly against the reference
    instruction descriptions and validated in isolation.
 3. **Work the import trace.** Each time the port gets further, the trace shows
-   the next unimplemented API. Pool allocation, IRQL, sync objects and threads
-   are already done; XAM licensing, storage and networking are not.
-4. **Resolve exports via `XexGetProcedureAddress` properly.** Today it returns
-   0, which is why nothing dynamic initialises.
-5. **Implement the Xenos command processor.** This is the long pole and the
+   the next unimplemented API. Pool allocation, IRQL, sync objects, threads, TLS,
+   virtual memory and XEX headers are done; XAM licensing, storage, input and
+   networking are not.
+4. **Implement the Xenos command processor.** This is the long pole and the
    reason no resolution scaling, FOV or AA option can be delivered yet. Once a
    present path exists, the mid-asm hook mechanism documented in
    [GRAPHICS.md](GRAPHICS.md) makes those options straightforward.
-6. **Fix the jump table detections** once the boot path is far enough in to hit
+5. **Fix the jump table detections** once the boot path is far enough in to hit
    the affected regions.
 
-Items 1–4 are ordinary runtime engineering. Item 5 is a GPU emulator and is
+Items 1â€“3 are ordinary runtime engineering. Item 4 is a GPU emulator and is
 substantially larger than everything else combined.
 
 ---
