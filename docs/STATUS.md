@@ -115,37 +115,55 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 - the boot path walks an uninitialised heap descriptor (current frontier)
+### Blocker 2 - the region header is not initialised before first use (current frontier)
 
-Boot reaches thread creation and stops in the heap allocator. Measured by entry
-override:
+Boot reaches thread creation and stops in the heap allocator. Reproducing the
+guest's own arithmetic:
 
 ```
-sub_82345E48 #1 -> 0x9C5B4000   handle r4=0x9C5AD000
-  [h+56]   = 0x846A8590    (a valid first block)
-  [h+1408] = 0x00000000
-  [h+1412] = 0x00000000    <- the grow method
-
-first VM page 0x846A8000:
-  [h+56]   = 0x00000610
-  [h+1408] = 0x846A8610    <- POPULATED, pointing into its own page
-  [h+1412] = 0x00000000
+sub_823460D8 #1  region r30=0x846A8000
+  lhz(+2)=0x0063  rotlwi4=0x00000630 -> block r31=0x846A79D0
 ```
 
-`0x846A8610 - 0x846A8000 = 0x610`, which is also `[page+56]`: the descriptor stores
-the offset of its own sub-structure, so `0x846A8000` is a correctly initialised
-heap descriptor.
+`sub_823460D8` walks the block list backwards from the end of a region:
 
-**The chain.** `sub_82345E48` tests `[heap+1412]`. Zero means "no grow method", so
-it falls back to `NtAllocateVirtualMemory` and returns the raw page as though it
-were an initialised block header. `sub_823460D8` then reads that block's `+12`
-field — zero — and faults at `0x0`.
+```asm
+0x823460F4  lhz   r11,2(r30)      ; region block count
+0x823460F8  rotlwi r11,r11,4
+0x823460FC  subf  r31,r11,r30     ; r31 = r30 - size*16
+...
+lwz   r11,12(r31)                  ; faults: outside the region
+```
 
-**Two descriptors exist.** `0x846A8000` is correctly initialised. `0x9C5AD000` —
-the one the boot path walks — has both fields zero. Either something passes the
-second where the first is wanted, or the second is expected to be initialised by a
-path that never runs. Both readings fit every measurement so far; neither is
-established.
+With `r30 = 0x846A8000`, the computed block is `0x846A79D0` — 0x630 bytes
+**before** the region, so the read is invalid by construction. `[+2]` is the
+region's block count and is what is wrong.
+
+`NtAllocateVirtualMemory` zeroes the page it returns, and `[+2]` is not zero, so
+either the guest wrote it or the region was never set up.
+
+**Who does set these up:** a scan of the heap family shows `sub_823478F0` is the
+only function that writes a block's `+12` back pointer (4 stores);
+`sub_823460D8` reads it 4 times and writes it 0 times. The crash site consumes
+blocks, it does not create them. `sub_823478F0` does run — six entries, at
+`0x846A8690`, `0x846A8770`, `0x846A8800`, `0x846AB060`, `0x846A8D90`,
+`0x846A8DC0`, all *above* `0x846A8000`.
+
+**Open:** why is the region header at `0x846A8000` not initialised before first
+use, when the function that does initialise them has run six times? Either
+`sub_823460D8` is reached on a path that should have initialised the region
+first, or that initialisation is conditional on something reading false here.
+Both fit every measurement; neither is established.
+
+#### Two conclusions this replaces
+
+- *"sub_82345E48 returns an uninitialised block header"* — wrong. It returns
+  `0x9C5B4000`, but `sub_823460D8` is not called with that. It is called with
+  `0x846A8000`.
+- *"a region base is passed where a block is expected"* — wrong, and
+  instructively so. `0x846A8000` **is** a region header; walking backwards from
+  `r30` is the intended scheme, not a mistake. The header's own `+2` is the
+  fault.
 
 #### Ruled out by measurement
 

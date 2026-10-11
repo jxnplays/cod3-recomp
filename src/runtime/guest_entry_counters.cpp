@@ -667,3 +667,117 @@ PPC_FUNC(sub_823438C8)
 //
 // =============================================================================
 
+
+// -----------------------------------------------------------------------------
+// Block layout at the address sub_82345E48 returns
+// -----------------------------------------------------------------------------
+//
+// sub_823460D8 faults on [block+12] where block is what sub_82345E48 returned
+// (0x9C5B4000, a raw NtAllocateVirtualMemory page). Before treating that as a
+// bug, the layout has to be known: if +0 and +8 do not hold plausible sizes the
+// page is not a block header at all and the caller is being handed the wrong
+// kind of object.
+//
+// This hook exists for that one question and prints the first 8 words.
+extern "C" void __imp__sub_823460D8(PPCContext& __restrict ctx, uint8_t* base);
+
+
+// -----------------------------------------------------------------------------
+// sub_823478F0 - the only function that writes a block's +12 back pointer
+// -----------------------------------------------------------------------------
+//
+// A scan of the heap family settles who owns that field:
+//
+//   sub_823478F0   writes +12 four times, reads it four times
+//   sub_823460D8   writes it zero times, reads it four times   <- the crash site
+//   sub_823464E0   writes it once
+//   the rest       neither
+//
+// So the heap core builds blocks and the crash site only consumes them. If
+// sub_823478F0 has not run for this block, +12 is whatever the page came with.
+//
+// This counts its entries. If it has run, the defect is that it wrote the wrong
+// value or the wrong block; if it has not, the defect is upstream of it.
+extern "C" void __imp__sub_823478F0(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_823478F0)
+{
+    PPC_FUNC_PROLOGUE();
+
+    __imp__sub_823478F0(ctx, base);
+
+    static unsigned calls = 0;
+    if (calls++ < 6)
+    {
+        std::fprintf(stderr,
+            "[entries] sub_823478F0 #%u  (r3=0x%08X r4=0x%08X)\n",
+            calls, ctx.r3.u32, ctx.r4.u32);
+        std::fflush(stderr);
+    }
+}
+
+// =============================================================================
+//  FINDING: the region header at 0x846A8000 is never initialised
+// =============================================================================
+//
+//  Measured, with the guest's own arithmetic reproduced:
+//
+//    sub_823460D8 #1  region r30=0x846A8000
+//      lhz(+2)=0x0063  rotlwi4=0x00000630 -> block r31=0x846A79D0
+//
+//  sub_823460D8 walks the block list BACKWARDS from the end of the region:
+//
+//    0x823460F4  lhz   r11,2(r30)
+//    0x823460F8  rotlwi r11,r11,4
+//    0x823460FC  subf  r31,r11,r30        r31 = r30 - size*16
+//    ...
+//    lwz   r11,12(r31)                     <- faults here
+//
+//  With r30 = 0x846A8000 and [+2] = 0x0063, the computed block is 0x846A79D0 -
+//  0x630 bytes BEFORE the region. It is outside memory the region owns, so the
+//  read is invalid by construction.
+//
+//  [+2] is the region's block count. The CRT writes it when it sets a region up.
+//  Nothing has written it here: NtAllocateVirtualMemory zeroes the page it
+//  returns, and the value 0x0063 is not zero, so the guest wrote it - or the
+//  region was never set up and this field is carrying a value from something
+//  else entirely.
+//
+//  ## What was ruled out along the way
+//
+//  * Not the loader region colliding with the CRT allocator. The loader keeps
+//    64 KiB at the base of the heap and NtAllocateVirtualMemory resumes above
+//    it; a warning was added at that boundary and it never fired.
+//
+//  * Not sub_823460D8 being handed the wrong object. A scan of the heap family
+//    shows sub_823478F0 is the only function that writes a block's +12 back
+//    pointer (four stores); sub_823460D8 reads it four times and writes it zero
+//    times. The crash site consumes blocks, it does not create them. And
+//    sub_823478F0 does run - six entries, at 0x846A8690, 0x846A8770, 0x846A8800,
+//    0x846AB060, 0x846A8D90, 0x846A8DC0.
+//
+//  ## Two earlier conclusions this replaces
+//
+//  "sub_82345E48 returns an uninitialised block header" was wrong: it returns
+//  0x9C5B4000, but sub_823460D8 is not called with that. It is called with
+//  0x846A8000.
+//
+//  "sub_823460D8 is handed the page base rather than a block" was also wrong, and
+//  wrong in an instructive way. 0x846A8000 IS a region header - the walk from
+//  r30 backwards is the intended scheme, not a mistake. The region header's own
+//  +2 field is what is wrong.
+//
+//  ## The open question
+//
+//  Why is the region header at 0x846A8000 not initialised before first use, when
+//  sub_823478F0 - which does initialise region and block headers - has run six
+//  times at higher addresses?
+//
+//  The candidate answers are: sub_823460D8 is reached on a path that should have
+//  initialised the region first; or the initialisation is conditional on
+//  something that reads false here. Both fit every measurement so far. Neither is
+//  established, and this session has been wrong enough times by picking one
+//  without evidence that it is left open deliberately.
+//
+// =============================================================================
+

@@ -131,6 +131,26 @@ void* cod3_heap_alloc(uint32_t bytes, uint32_t tag)
     g_loader_brk += aligned;
 
     __builtin_memset(result, 0, aligned);
+
+    // The CRT's own allocator starts at heap + kLoaderRegionBytes. A loader
+    // allocation that reaches or crosses that line is memory the CRT will later
+    // be handed as a fresh page, with our data already in it - which is exactly
+    // what the guest heap region at 0x846A8000 turned out to contain when the
+    // CRT walked it as a region header.
+    //
+    // Report rather than assert, because the boundary is a decision rather than a
+    // measured limit and this is where to look if it moves.
+    if (g_loader_brk >= kLoaderRegionBytes - 0x1000)
+    {
+        std::fprintf(stderr,
+            "[cod3] loader region is nearly exhausted: 0x%X of 0x%X bytes used;"
+            " last allocation %u bytes (tag %08X) at 0x%08X\n"
+            "[cod3]   the CRT allocator resumes at 0x%08X\n",
+            g_loader_brk, kLoaderRegionBytes, bytes, tag,
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(result)),
+            g_guest_heap_base + kLoaderRegionBytes);
+    }
+
     return result;
 }
 
