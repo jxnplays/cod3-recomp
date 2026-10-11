@@ -115,55 +115,61 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 - the region header is not initialised before first use (current frontier)
+### Blocker 2 - CRT heap fault tolerated; boot reaches the display layer (current frontier)
 
-Boot reaches thread creation and stops in the heap allocator. Reproducing the
-guest's own arithmetic:
+**Boot now reaches the graphics stack.** With the heap fault tolerated (below),
+execution passes the CRT heap, the thread and synchronisation layer, the XAM
+loader calls and the network init, and arrives in the display/NGL path.
 
-```
-sub_823460D8 #1  region r30=0x846A8000
-  lhz(+2)=0x0063  rotlwi4=0x00000630 -> block r31=0x846A79D0
-```
+The chain of progress, each verified by where boot stops afterwards:
 
-`sub_823460D8` walks the block list backwards from the end of a region:
+| Stage | Reached |
+|---|---|
+| before | died in CRT heap code at the first heap call |
+| + heap fault tolerance | `XamGetSystemVersion`, `NetDll_WSAStartup`, `NtCreateEvent`, `NtWaitForSingleObjectEx`, `NtResumeThread`, … |
+| + thread/sync imports implemented | first fault moved to an import thunk, `XGetVideoMode` |
+| + `XGetVideoMode` signature fixed | `VdQueryVideoMode` |
+| + `VdQueryVideoMode` signature fixed | `sub_822E8108`, in the display path |
+| + `Vd*` audited against call sites | same |
 
-```asm
-0x823460F4  lhz   r11,2(r30)      ; region block count
-0x823460F8  rotlwi r11,r11,4
-0x823460FC  subf  r31,r11,r30     ; r31 = r30 - size*16
-...
-lwz   r11,12(r31)                  ; faults: outside the region
-```
+**Current fault:** `sub_822E8108 +89`, address `0x9C`, with `r3 = 0x9CC10080` —
+389 MiB into the heap, inside the region `MmAllocatePhysicalMemoryEx` reserved
+without committing. The guest derives a pointer from it and dereferences. This is
+the hazard recorded when that function was changed to reserve rather than commit:
+a read of never-written reserved space returns whatever the region held instead
+of faulting.
 
-With `r30 = 0x846A8000`, the computed block is `0x846A79D0` — 0x630 bytes
-**before** the region, so the read is invalid by construction. `[+2]` is the
-region's block count and is what is wrong.
+#### Heap fault tolerance (opt-in, `COD3_TOLERATE_HEAP_FAULT=1`)
 
-`NtAllocateVirtualMemory` zeroes the page it returns, and `[+2]` is not zero, so
-either the guest wrote it or the region was never set up.
+**This does not fix the heap.** The root cause is still open: the region header
+at `0x846A8000` carries a block count of `0x63`, so the backwards walk lands
+0x630 bytes outside the region.
 
-**Who does set these up:** a scan of the heap family shows `sub_823478F0` is the
-only function that writes a block's `+12` back pointer (4 stores);
-`sub_823460D8` reads it 4 times and writes it 0 times. The crash site consumes
-blocks, it does not create them. `sub_823478F0` does run — six entries, at
-`0x846A8690`, `0x846A8770`, `0x846A8800`, `0x846AB060`, `0x846A8D90`,
-`0x846A8DC0`, all *above* `0x846A8000`.
+It makes that one diagnosed fault survivable so the rest of the boot path can be
+worked on. Every skip is reported with its region, count and running total, and
+the total is printed on any crash. Without the environment variable nothing
+changes — a run that quietly limps past a broken heap is worse than one that stops
+and says so.
 
-**Open:** why is the region header at `0x846A8000` not initialised before first
-use, when the function that does initialise them has run six times? Either
-`sub_823460D8` is reached on a path that should have initialised the region
-first, or that initialisation is conditional on something reading false here.
-Both fit every measurement; neither is established.
+Every allocation the guard refuses fails that would otherwise have succeeded, so
+downstream behaviour may reflect that. **A port that reaches the renderer this
+way is not a working port.** What it buys is the ability to work on everything
+downstream instead of everything upstream.
 
-#### Two conclusions this replaces
+#### Wrong signatures, found by being exercised
 
-- *"sub_82345E48 returns an uninitialised block header"* — wrong. It returns
-  `0x9C5B4000`, but `sub_823460D8` is not called with that. It is called with
-  `0x846A8000`.
-- *"a region base is passed where a block is expected"* — wrong, and
-  instructively so. `0x846A8000` **is** a region header; walking backwards from
-  `r30` is the intended scheme, not a mistake. The header's own `+2` is the
-  fault.
+The `Vd*` display imports and `XGetVideoMode` were all written against assumed
+signatures and none had been exercised. Once boot reached the display layer they
+failed immediately, one after another:
+
+- `XGetVideoMode` takes **one** out-pointer, not four. It was storing through
+  `r4`/`r5`/`r6`, which are ordinary values at the call site.
+- `VdQueryVideoMode` takes the structure in `r3`, not `r5`.
+- `VdGetCurrentDisplayGamma` takes an index in `r3` and the out-pointer in `r4`;
+  it was writing through the index.
+
+All three were then audited against their call sites at once rather than being
+fixed one fault at a time.
 
 #### Ruled out by measurement
 
