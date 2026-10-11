@@ -478,7 +478,25 @@ void cod3_report_guest_entries()
 }
 
 // -----------------------------------------------------------------------------
-// The four functions sub_82344CF8 calls, in order
+// MmAllocatePhysicalMemoryEx - why it is being implemented now
+// -----------------------------------------------------------------------------
+//
+// The stub returns 0 and the guest calls it 60 times during boot. sub_82344EE8
+// checks the result immediately:
+//
+//   0x82344F44  bl    MmAllocatePhysicalMemoryEx
+//   0x82344F48  mr.   r31,r3
+//   0x82344F4C  bne   0x82344f54        success -> continue
+//   0x82344F50  li    r3,8              failure -> error path
+//
+// Every one of those 60 calls takes the failure path, so whatever the caller is
+// building never gets built. The fault that ends boot is consistent with that:
+// sub_824D5D60 loads r4 from [[0x8268DEEC]+4] and passes it to sub_820B0410,
+// which does `mr r26,r4` then `lbz r11,101(r26)`. With r4 zero the load faults
+// at 101 decimal = 0x65, which is exactly the reported fault address.
+//
+// The signature below is taken from that call site rather than assumed. See
+// mm_allocate_physical_memory in kernel_imports_core.cpp for the full reading.
 // -----------------------------------------------------------------------------
 //
 // They are emitted here, at the end of the file, because the macro needs

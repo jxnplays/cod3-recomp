@@ -47,6 +47,10 @@ HAND_IMPLEMENTED = {
     "ObDereferenceObjectByPointer", "ObReferenceObjectByPointer",
     # memory descriptors
     "MmGetPhysicalAddress", "MmMapIoSpace", "MmUnmapIoSpace", "MmMapIoSpaceEx",
+    # Implemented in src/runtime/mm_physical.cpp. The guest calls this 60 times
+    # during boot and the generated stub returns 0, so every call failed and the
+    # structures behind them were never built.
+    "MmAllocatePhysicalMemoryEx",
     # virtual memory
     "NtAllocateVirtualMemory", "NtFreeVirtualMemory", "NtQueryVirtualMemory",
     # module / export resolution (the game resolves most of D3D dynamically)

@@ -273,6 +273,23 @@ void* cod3_heap_alloc(uint32_t bytes, uint32_t tag);
 // structures if they shared a region.
 extern const size_t kLoaderRegionBytes;
 
+// The live guest context, published by the launcher before the entry point runs.
+// The crash handler reads it to report register state: the faulting instruction
+// alone rarely identifies which register held the bad pointer.
+// Null until the launcher has started the guest.
+extern PPCContext* g_crash_ctx;
+
+// The next free guest virtual address for kernel-memory allocation, shared by
+// NtAllocateVirtualMemory and MmAllocatePhysicalMemoryEx. Both carve from the one
+// guest address space, so they must share a single bump point or they will
+// eventually hand out the same bytes twice.
+uint32_t* g_vm_brk_slot();
+
+// Whether kernel-memory allocation chatter reaches stderr. COD3_QUIET_VM=1
+// silences it. A function rather than a global so there is no cross-translation
+// unit initialisation order to get wrong.
+bool cod3_vm_quiet();
+
 // Allocate (once per field) a zeroed guest page to stand in for an XEX header
 // field this title does not carry. The Xbox 360 kernel answers such queries with
 // a pointer to a default value rather than failing, and the CRT dereferences the

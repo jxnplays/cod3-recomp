@@ -433,6 +433,10 @@ int main(int argc, char** argv)
         std::fflush(stderr);
     }
 
+    // Publish the context so the crash handler can report register state. Every
+    // recompiled function receives this same object by reference.
+    g_crash_ctx = &ctx;
+
     cod3_run_guest_function(g_guest_entry_point, ctx);
 
     std::fprintf(stderr, "\n[cod3] entry point returned 0x%08X\n", ctx.r3.u32);

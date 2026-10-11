@@ -601,6 +601,11 @@ PPC_FUNC(__imp__KeSetPriorityThread)
 
 static uint32_t g_vm_brk = 0; // next free guest VA, 0 until first allocation
 
+uint32_t* g_vm_brk_slot()
+{
+    return &g_vm_brk;
+}
+
 // Live regions, so a new allocation never overlaps one already handed out.
 // The title stores these addresses in long-lived descriptors, so handing back
 // the same address twice corrupts them silently and much later.
@@ -613,10 +618,17 @@ static std::vector<VmRegion> g_vm_regions;
 
 // The VM logs its activity, which is useful while bringing the boot path up and
 // noisy afterwards. COD3_QUIET_VM=1 silences it.
-static const bool vm_quiet = []() {
-    const char* v = std::getenv("COD3_QUIET_VM");
-    return !(v != nullptr && v[0] == '1');
-}();
+// Whether kernel-memory chatter reaches stderr. Shared with mm_physical.cpp,
+// which allocates through the same region and would otherwise be the only
+// allocator that talks unconditionally.
+bool cod3_vm_quiet()
+{
+    static const bool quiet = []() {
+        const char* v = std::getenv("COD3_QUIET_VM");
+        return !(v != nullptr && v[0] == '1');
+    }();
+    return quiet;
+}
 
 PPC_FUNC(__imp__NtAllocateVirtualMemory)
 {
@@ -767,7 +779,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
 
     // The VM logs its activity, which is useful while bringing the boot path up
     // and noisy afterwards. COD3_QUIET_VM=1 silences it.
-    if (vm_quiet)
+    if (cod3_vm_quiet())
     {
         std::fprintf(stderr,
             "[cod3] NtAllocateVirtualMemory: flags=0x%X size=0x%X -> 0x%08X\n",
@@ -814,7 +826,7 @@ PPC_FUNC(__imp__NtQueryVirtualMemory)
         }
     }
 
-    if (vm_quiet)
+    if (cod3_vm_quiet())
     {
         std::fprintf(stderr,
             "[cod3] NtQueryVirtualMemory: addr=0x%08X class=%u -> base=0x%08X "
@@ -965,7 +977,7 @@ PPC_FUNC(__imp__KeTlsAlloc)
     // contents directly if it does so.
     (void)cod3_pool_alloc(0x1000, 'TLS\u0000', 0);
 
-    if (vm_quiet)
+    if (cod3_vm_quiet())
     {
         std::fprintf(stderr, "[cod3] KeTlsAlloc -> slot %u\n", slot);
     }
@@ -1003,7 +1015,7 @@ PPC_FUNC(__imp__KeTlsGetValue)
     if (value == 0 && std::getenv("COD3_TLS_STUB") != nullptr)
         value = cod3_runtime_service_address(Cod3RuntimeService_TlsDispatcher);
 
-    if (vm_quiet)
+    if (cod3_vm_quiet())
     {
         std::fprintf(stderr, "[cod3] KeTlsGetValue(slot=%u) -> 0x%08X\n",
                      slot, value);
@@ -1217,7 +1229,7 @@ PPC_FUNC(__imp__RtlImageXexHeaderField)
         dataPtr = cod3_xex_default_field_slot(field);
     }
 
-    if (vm_quiet)
+    if (cod3_vm_quiet())
     {
         std::fprintf(stderr,
             "[cod3] RtlImageXexHeaderField(0x%08X) -> 0x%08X\n",

@@ -230,6 +230,25 @@ void cod3_install_crash_handler()
                 // so a PC past a function's end is attributed to that function.
                 // See dump_index_neighbourhood() below.
                 dump_index_neighbourhood(rec->ExceptionAddress);
+
+                // The guest register state is what actually identifies a bad
+                // pointer. Reporting r1/r3/r11/r26-r31 lets the faulting store be
+                // matched against the instruction that made it, instead of the
+                // base register being guessed at from the address alone.
+                if (g_crash_ctx != nullptr)
+                {
+                    const PPCContext& c = *g_crash_ctx;
+                    std::fprintf(stderr,
+                        "[cod3]   guest regs: r1=0x%08X r3=0x%08X r4=0x%08X"
+                        " r11=0x%08X\n"
+                        "[cod3]               r26=0x%08X r27=0x%08X r28=0x%08X"
+                        " r29=0x%08X\n"
+                        "[cod3]               r30=0x%08X r31=0x%08X r5=0x%08X"
+                        " r6=0x%08X\n",
+                        c.r1.u32, c.r3.u32, c.r4.u32, c.r11.u32,
+                        c.r26.u32, c.r27.u32, c.r28.u32, c.r29.u32,
+                        c.r30.u32, c.r31.u32, c.r5.u32, c.r6.u32);
+                }
             }
             else
             {

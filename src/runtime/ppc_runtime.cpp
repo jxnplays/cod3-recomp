@@ -51,6 +51,15 @@ uint32_t g_crt_thread_block = 0;
 uint32_t* g_thread_io_word = nullptr;
 uint32_t g_thread_io_block_expected = 0;
 
+// The live guest context, published once by the launcher.
+//
+// Every recompiled function takes the same PPCContext by reference, and that
+// object lives in the launcher's stack frame. The vectored exception handler runs
+// on the faulting thread but not inside any generated frame, so without this it
+// has no way to report which register held the bad pointer - only which
+// instruction faulted, which is not enough to identify the cause.
+PPCContext* g_crash_ctx = nullptr;
+
 // The loader bump allocator (cod3_heap_alloc) is defined further down, next to
 // the heap region it carves from. Nothing here needs it.
 
