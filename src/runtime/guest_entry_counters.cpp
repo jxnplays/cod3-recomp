@@ -631,22 +631,26 @@ PPC_FUNC(sub_82345E48)
     static unsigned calls = 0;
     if (calls++ < 4)
     {
-        // The heap descriptor field at +1412 holds a function pointer that decides
-        // whether the guest grows the heap through a method, or falls back to a raw
-        // NtAllocateVirtualMemory that returns uninitialised memory as if it were a
-        // block header. That fallback returning a page is the current crash.
-        //
-        // Print the neighbourhood rather than just the one field: whether the
-        // descriptor was populated at all is the question, and a single zero does
-        // not distinguish "unset" from "set to something that reads as zero".
+        // Read the fields through the handle exactly as the guest does, at
+        // [r4+1408] and [r4+1412], and only when r4 is a plausible guest address.
+        // An unguarded read of a null handle faults at the field offset, which is
+        // indistinguishable from the bug being diagnosed - that happened once
+        // already with a read at ctx.r3.
+        const bool haveHeap =
+            heap >= g_guest_heap_base &&
+            heap < g_guest_heap_base + g_guest_heap_size;
         std::fprintf(stderr,
-            "[entries] sub_82345E48 #%u -> 0x%08X\n"
-            "[entries]   heap=0x%08X  [heap+56]=0x%08X (first block)\n"
-            "[entries]   [heap+1408]=0x%08X  [heap+1412]=0x%08X <- grow method\n"
-            "[entries]   [heap+1416]=0x%08X  [heap+1420]=0x%08X\n",
-            calls, ctx.r3.u32, heap, cod3_load_u32(heap + 56),
-            cod3_load_u32(heap + 1408), cod3_load_u32(heap + 1412),
-            cod3_load_u32(heap + 1416), cod3_load_u32(heap + 1420));
+            "[entries] sub_82345E48 #%u -> 0x%08X  handle r4=0x%08X%s\n",
+            calls, ctx.r3.u32, heap, haveHeap ? "" : "  (not a guest address)");
+        if (haveHeap)
+        {
+            std::fprintf(stderr,
+                "[entries]   [h+56]=0x%08X  [h+1408]=0x%08X"
+                "  [h+1412]=0x%08X <- grow method\n",
+                cod3_load_u32(heap + 56),
+                cod3_load_u32(heap + 1408),
+                cod3_load_u32(heap + 1412));
+        }
         std::fflush(stderr);
     }
 }
