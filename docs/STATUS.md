@@ -202,6 +202,75 @@ Every block reports a sane size and steps backwards by exactly that much.
 **Skips under `COD3_TOLERATE_HEAP_FAULT` are zero** — the first time the heap
 tolerance has had nothing to tolerate on this path.
 
+##### The chain, established link by link
+
+Every step below is measured, and the chain is closed:
+
+1. **The heap is dispatched through a table at `0x8208C600`.** The heap
+   functions are contiguous entries in it — including `sub_823460D8` (the walk)
+   and `sub_823464E0` (the extend) as *adjacent* entries.
+
+2. **`sub_82347340` and `sub_823473D8` install the descriptor's method slots.**
+   They are the only writers that touch `+1408` and `+1412` together, and they do
+   it by copying out of an owner structure:
+
+   ```asm
+   r10 = [r31+80]         ; the heap descriptor
+   stw r21,1408(r10)
+   r11 = [r31+164]        ; the grow method, loaded from a FIELD
+   stw r11,1412(r10)
+   ```
+
+   So `+1412` is not a literal — it is a field the owner struct supplies.
+
+3. **They have zero callers in the recompiled image.** A search for
+   `__imp__sub_82347340(` and `__imp__sub_823473D8(` returns nothing. They are
+   reached only through the vtable, where `sub_82347340` is entry `0x8208C748`.
+
+4. **They never run during boot.** The entry trace shows `sub_823478F0` — a
+   *consumer* of those slots — running six times, while neither installer appears
+   at all.
+
+5. **Therefore `+1412` is zero**, which is what `sub_82345E48` tests before
+   falling back to raw allocation.
+
+**That is the CRT heap fault, closed.** The loader's job on a 360 is to create
+the kernel heap object and give the descriptor its vtable. The recompiled guest
+never does that because on hardware it never has to — so it is loader work, and
+loader work belongs in the runtime.
+
+**The interface is wider than four slots, and only one was ever filled.** The
+readers of the method fields:
+
+| offset | readers | notable |
+|---|---|---|
+| `+1404` | 1 | `sub_82437108` |
+| `+1408` | 16 | including `sub_823478F0` and `sub_823481D8` |
+| `+1412` | 5 | including `sub_82345E48` |
+| `+1416` | 1 | `sub_82437108` |
+| `+1420` | 5 | including `sub_822BC9F0` |
+
+The grow trampoline installed one slot (`+1412`) and left the other four zero. If
+the fix is to populate the method table, it has to populate all of them —
+installing one method was always going to be a partial answer.
+
+#### What to do next
+
+Point the descriptor's method slots at the correct slice of the `0x8208C600`
+table rather than at a hand-written trampoline. The table already contains the
+real implementations — `sub_823464E0`, the extend, is entry `0x8208C718`, right
+next to the walk at `0x8208C710`.
+
+What is **not** yet known is *which* slice. Working it out needs the caller's
+view of the interface: which entry is method 0, and how the slots map onto
+entries. `sub_82437108` reads `+1404`, `+1416` and `+1420` together and is the
+best candidate for the code that copies a whole sub-interface, so disassembling
+it is the obvious next step.
+
+This is the most actionable state the heap problem has been in: the cause is
+identified, the fix's shape is known, and the only open question is a table
+offset.
+
 #### The heap is vtable-dispatched from 0x8208C600
 
 **This is the most structurally useful thing found so far**, and it came from a
