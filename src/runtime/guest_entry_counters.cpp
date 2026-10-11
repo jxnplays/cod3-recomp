@@ -598,3 +598,40 @@ PPC_FUNC(sub_823438C8)
 // at this point in boot, and the next thing to establish is who is supposed to
 // set it - r13 is the CRT's per-thread pointer, initialised on the thread-start
 // path. That is the thread to pull, not this function.
+// -----------------------------------------------------------------------------
+// sub_82345E48 - the block allocator whose output is walked straight into
+// -----------------------------------------------------------------------------
+//
+// sub_82346D98 calls it, then passes its result to sub_823460D8:
+//
+//   0x82346E10  bl    sub_82345E48
+//   0x82346E14  mr.   r4,r3
+//   0x82346E18  beq   0x82346e60        bails out if r3 == 0
+//   ...
+//   0x82346E34  bl    sub_823460D8
+//
+// and sub_823460D8 immediately does `lwz r11,12(r31)` where r31 is derived from
+// the block header, then `lwz r8,0(r11)`. With that +12 field unset the second
+// load faults at address 0, which is exactly the current crash.
+//
+// sub_82345E48 returns 0 from three separate places, so a zero result is a real
+// outcome rather than a stub artefact. What it actually returned is recorded here
+// rather than inferred by reading the list walk by hand, which is how the last
+// few diagnoses went wrong.
+extern "C" void __imp__sub_82345E48(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_82345E48)
+{
+    PPC_FUNC_PROLOGUE();
+
+    __imp__sub_82345E48(ctx, base);
+
+    static unsigned calls = 0;
+    if (calls++ < 6)
+    {
+        std::fprintf(stderr,
+            "[entries] sub_82345E48 #%u -> 0x%08X (heap r4=0x%08X, key r5=0x%08X)\n",
+            calls, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+        std::fflush(stderr);
+    }
+}

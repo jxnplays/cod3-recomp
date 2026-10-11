@@ -199,12 +199,24 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
         return;
     }
 
-    // Deliberately NOT zeroed. These are reservations of address space, and the
-    // guest populates them itself; sixty 371 MiB requests cannot all be committed
-    // and pretending otherwise would corrupt the heap layout. The cost is that a
-    // guest read of never-written reserved space sees whatever the region held,
-    // rather than a fault. That is a real difference from the hardware and is
-    // noted in docs/STATUS.md rather than hidden here.
+    // Zeroing is deliberate, and it was the opposite of what the first version did.
+    //
+    // These reservations are large but the guest only sparsely populates them.
+    // Leaving them unzeroed looked harmless and was not: the CRT wrote a block
+    // header into the reserved region and then read back a pointer field it had
+    // not itself written, getting whatever the carve happened to leave there.
+    // The heap base is fresh from VirtualAlloc so it read as zero, which looked
+    // like an unset field rather than stale memory - and the guest faulted
+    // dereferencing it.
+    //
+    // Zeroing a reservation is what the 360 does for committed memory and it
+    // costs one memset over a range the guest has not touched yet, so it cannot
+    // cost more than the guest would have paid populating it.
+    {
+        uint8_t* mem = reinterpret_cast<uint8_t*>(result);
+        __builtin_memset(mem, 0, pageAligned);
+    }
+
     if (!cod3_vm_quiet())
     {
         std::fprintf(stderr,

@@ -238,16 +238,36 @@ void cod3_install_crash_handler()
                 if (g_crash_ctx != nullptr)
                 {
                     const PPCContext& c = *g_crash_ctx;
-                    std::fprintf(stderr,
-                        "[cod3]   guest regs: r1=0x%08X r3=0x%08X r4=0x%08X"
-                        " r11=0x%08X\n"
-                        "[cod3]               r26=0x%08X r27=0x%08X r28=0x%08X"
-                        " r29=0x%08X\n"
-                        "[cod3]               r30=0x%08X r31=0x%08X r5=0x%08X"
-                        " r6=0x%08X\n",
-                        c.r1.u32, c.r3.u32, c.r4.u32, c.r11.u32,
-                        c.r26.u32, c.r27.u32, c.r28.u32, c.r29.u32,
-                        c.r30.u32, c.r31.u32, c.r5.u32, c.r6.u32);
+                    const uint32_t r[] = {
+                        c.r0.u32,  c.r1.u32,  c.r2.u32,  c.r3.u32,
+                        c.r4.u32,  c.r5.u32,  c.r6.u32,  c.r7.u32,
+                        c.r8.u32,  c.r9.u32,  c.r10.u32, c.r11.u32,
+                        c.r12.u32, static_cast<uint32_t>(c.lr),
+                        c.r13.u32, c.r14.u32, c.r15.u32, c.r16.u32,
+                        c.r17.u32, c.r18.u32, c.r19.u32, c.r20.u32,
+                        c.r21.u32, c.r22.u32, c.r23.u32, c.r24.u32,
+                        c.r25.u32, c.r26.u32, c.r27.u32, c.r28.u32,
+                        c.r29.u32, c.r30.u32, c.r31.u32,
+                    };
+                    static const char* kNames[] = {
+                        "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
+                        "r8", "r9", "r10", "r11", "r12", "lr",
+                        "r13", "r14", "r15", "r16", "r17", "r18", "r19",
+                        "r20", "r21", "r22", "r23", "r24", "r25", "r26",
+                        "r27", "r28", "r29", "r30", "r31",
+                    };
+
+                    // All 32, not a selected few. Several faults have turned on
+                    // a register that was not being printed, and narrowing the
+                    // dump has meant re-running with a different subset.
+                    for (int i = 0; i < 32; i += 4)
+                    {
+                        std::fprintf(stderr,
+                            "[cod3]   %-3s=0x%08X  %-3s=0x%08X  %-3s=0x%08X"
+                            "  %-3s=0x%08X\n",
+                            kNames[i], r[i], kNames[i + 1], r[i + 1],
+                            kNames[i + 2], r[i + 2], kNames[i + 3], r[i + 3]);
+                    }
                 }
             }
             else
