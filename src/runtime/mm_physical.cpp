@@ -64,17 +64,32 @@
 //  failure - the caller turns that into the error code 8. So this returns a guest
 //  virtual address in r3, not a status.
 //
-//  ## Implementation
+//  ## What the requests actually are
 //
-//  There is no physical memory on this port, so "physical" allocation is a request
-//  for guest virtual memory. It carves from the same region as
-//  NtAllocateVirtualMemory: the guest is a single address space here, so the two
-//  must not hand out overlapping ranges.
+//  Logged from a run:
 //
-//  The in/out parameters are honoured rather than ignored. The CRT checks the
-//  returned base against the range it asked for, so returning an address outside
-//  LowestAddress..HighestAddress would be rejected by the caller even though it
-//  looks like a successful allocation.
+//      r3=0 bytes=0x172F0000 r5=0x20000004 lowest=0x00000000
+//      r3=0 bytes=0x00B00000 r5=0x20000404 lowest=0x00000000
+//
+//  alternating, 60 calls total.
+//
+//  0x172F0000 is 370.9 MiB and is the XEX default heap size. Sixty identical
+//  371 MiB reservations would be 22 GiB, which is not what the caller means: on
+//  the 360 this reserves virtual address space and commits what it later needs.
+//  The 11 MiB request interleaved with it is the retry that follows a refused
+//  reservation.
+//
+//  So the honest behaviour on a flat-mapped port is to hand back the address range
+//  without committing it - carve the range, do not zero it - and let the guest
+//  populate it. Zeroing 371 MiB sixty times would be both useless and fatal to
+//  the heap budget.
+//
+//  Whether a given request should reserve or commit is decided by the guest's own
+//  Flags value (r8), which carries 0x20000004-style bits. Until that is
+//  characterised, this reserves rather than commits for every request, which is
+//  the safe direction: it never lies about how much memory exists, and a guest
+//  that writes to it will fault at the true boundary of the heap rather than into
+//  silently unmapped space.
 //
 // =============================================================================
 
@@ -184,18 +199,18 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
         return;
     }
 
-    // The memory has to be zeroed: the caller is getting fresh pages from its
-    // point of view, and the region is reused guest heap that may hold the
-    // previous run's leftovers.
-    uint8_t* mem = reinterpret_cast<uint8_t*>(result);
-    __builtin_memset(mem, 0, pageAligned);
-
+    // Deliberately NOT zeroed. These are reservations of address space, and the
+    // guest populates them itself; sixty 371 MiB requests cannot all be committed
+    // and pretending otherwise would corrupt the heap layout. The cost is that a
+    // guest read of never-written reserved space sees whatever the region held,
+    // rather than a fault. That is a real difference from the hardware and is
+    // noted in docs/STATUS.md rather than hidden here.
     if (!cod3_vm_quiet())
     {
         std::fprintf(stderr,
-            "[cod3] MmAllocatePhysicalMemoryEx: %u bytes -> 0x%08X"
-            " (reserved=0x%08X lowest=0x%08X highest=0x%08X flags=0x%08X)\n",
-            pageAligned, result, reserved, lowest, highest, flags);
+            "[cod3] MmAllocatePhysicalMemoryEx: reserved %u bytes at 0x%08X"
+            " (r5=0x%08X lowest=0x%08X highest=0x%08X flags=0x%08X)\n",
+            pageAligned, result, ctx.r5.u32, lowest, highest, flags);
     }
 
     // On the 360 r3 is the base address, and zero means failure.

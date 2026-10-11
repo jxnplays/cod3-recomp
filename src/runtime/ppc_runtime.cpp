@@ -967,7 +967,21 @@ bool cod3_load_image(const char* xex_path)
     // The table lives immediately after the image, so it has to be reserved
     // before the stack and heap are placed.
     constexpr size_t kGuestStackSize = 16 * 1024 * 1024;
-    constexpr size_t kGuestHeapSize = 256 * 1024 * 1024;
+
+    // Sized for what the title actually asks for, which is more than it first
+    // appears.
+    //
+    // MmAllocatePhysicalMemoryEx is called during boot with 0x172F0000 (370.9 MiB)
+    // repeatedly - that is the XEX default heap size, reserved as address space.
+    // At 256 MiB every one of those requests fails, so the CRT retries with an
+    // 11 MiB fallback and the structures behind the reservations are never built.
+    //
+    // Sixty reservations of 371 MiB would be 22 GiB, which is not the intent and
+    // does not fit. The heap is sized so the first large reservation succeeds and
+    // the heap has room for the game's real working set beyond it. If boot later
+    // proves to need more, this is the number to raise - and the fact that it was
+    // too small is exactly what the earlier 256 MiB looked like.
+    constexpr size_t kGuestHeapSize = 1024ull * 1024 * 1024;
 
     // Size of the indirect-call perfect-hash table.
     //
