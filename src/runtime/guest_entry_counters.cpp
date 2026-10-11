@@ -624,14 +624,136 @@ PPC_FUNC(sub_82345E48)
 {
     PPC_FUNC_PROLOGUE();
 
+    const uint32_t heap = ctx.r4.u32;
+
     __imp__sub_82345E48(ctx, base);
+
+    static unsigned calls = 0;
+    if (calls++ < 4)
+    {
+        // The heap descriptor field at +1412 holds a function pointer that decides
+        // whether the guest grows the heap through a method, or falls back to a raw
+        // NtAllocateVirtualMemory that returns uninitialised memory as if it were a
+        // block header. That fallback returning a page is the current crash.
+        //
+        // Print the neighbourhood rather than just the one field: whether the
+        // descriptor was populated at all is the question, and a single zero does
+        // not distinguish "unset" from "set to something that reads as zero".
+        std::fprintf(stderr,
+            "[entries] sub_82345E48 #%u -> 0x%08X\n"
+            "[entries]   heap=0x%08X  [heap+56]=0x%08X (first block)\n"
+            "[entries]   [heap+1408]=0x%08X  [heap+1412]=0x%08X <- grow method\n"
+            "[entries]   [heap+1416]=0x%08X  [heap+1420]=0x%08X\n",
+            calls, ctx.r3.u32, heap, cod3_load_u32(heap + 56),
+            cod3_load_u32(heap + 1408), cod3_load_u32(heap + 1412),
+            cod3_load_u32(heap + 1416), cod3_load_u32(heap + 1420));
+        std::fflush(stderr);
+    }
+}
+// -----------------------------------------------------------------------------
+// sub_82349CC0 - the only caller of sub_82347340, which installs the heap methods
+// -----------------------------------------------------------------------------
+//
+// sub_82347340 is the sole writer of the heap descriptor's method table at +1408
+// and the grow method at +1412. sub_82345E48 tests [heap+1412]: when it is zero
+// the guest falls back to a raw NtAllocateVirtualMemory and treats the returned
+// page as a block header, which is the current crash.
+//
+// sub_82349CC0 only calls it when a global is zero:
+//
+//   0x82349D60  lwz  r3,-22080(r31)      the global, at 0x826E5380
+//   0x82349D64  cmplwi cr6,r3,0
+//   0x82349D68  bl   sub_82347340        skipped unless r3 == 0
+//
+// So either this function never runs, or the global is already set and the heap
+// methods are never installed. Both are recorded rather than guessed between.
+extern "C" void __imp__sub_82349CC0(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_82349CC0)
+{
+    PPC_FUNC_PROLOGUE();
+
+    __imp__sub_82349CC0(ctx, base);
+
+    static unsigned calls = 0;
+    if (calls++ < 4)
+    {
+        std::fprintf(stderr,
+            "[entries] sub_82349CC0 #%u -> r3=0x%08X"
+            "  [0x826E5380]=0x%08X (heap-setup global)\n",
+            calls, ctx.r3.u32, cod3_load_u32(0x826E5380));
+        std::fflush(stderr);
+    }
+}
+// -----------------------------------------------------------------------------
+// sub_82347340 - installs the heap method table (+1408) and grow method (+1412)
+// -----------------------------------------------------------------------------
+//
+// The sole writer of the fields whose absence causes the current crash. Counting
+// entries here answers directly whether the heap setup runs, which the global's
+// value alone does not: a zero global means "should run", not "did run".
+extern "C" void __imp__sub_82347340(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_82347340)
+{
+    PPC_FUNC_PROLOGUE();
+
+    const uint32_t desc = ctx.r3.u32;
+
+    __imp__sub_82347340(ctx, base);
+
+    static unsigned calls = 0;
+    if (calls++ < 4)
+    {
+        // Read back what the call actually wrote rather than assuming the stores
+        // landed. Earlier work recorded a method pointer read at 0x8291F6C8 still
+        // being zero, so the install may be landing somewhere other than where it
+        // is looked for - or not landing at all.
+        // NOT read here: ctx.r3 is not the descriptor base, and dereferencing it
+        // faulted at 0x586. That was a fault caused by the diagnostic rather than
+        // one it was diagnosing. The arguments are recorded instead so the right
+        // base can be established before any field is touched.
+        std::fprintf(stderr,
+            "[entries] sub_82347340 #%u -> r3=0x%08X"
+            "  (r4=0x%08X r5=0x%08X r6=0x%08X r7=0x%08X r8=0x%08X)\n",
+            calls, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32,
+            ctx.r6.u32, ctx.r7.u32, ctx.r8.u32);
+        (void)desc;
+        std::fflush(stderr);
+    }
+}
+// -----------------------------------------------------------------------------
+// sub_82346D98 - creates heap descriptors
+// -----------------------------------------------------------------------------
+//
+// The heap the guest actually uses during boot is 0x9C5AD000, and its method
+// table at +1408/+1412 is zero. sub_82347340 - the sole writer of those fields -
+// ran, and it installed them on a DIFFERENT descriptor, 0x846A8000.
+//
+// So a second descriptor was created without going through that setup. This
+// counts the call and prints what it returns, which distinguishes "created a
+// second heap" from "handed back the first one again".
+extern "C" void __imp__sub_82346D98(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_82346D98)
+{
+    PPC_FUNC_PROLOGUE();
+
+    __imp__sub_82346D98(ctx, base);
 
     static unsigned calls = 0;
     if (calls++ < 6)
     {
         std::fprintf(stderr,
-            "[entries] sub_82345E48 #%u -> 0x%08X (heap r4=0x%08X, key r5=0x%08X)\n",
-            calls, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+            "[entries] sub_82346D98 #%u -> r3=0x%08X"
+            "  [+1408]=0x%08X [+1412]=0x%08X\n",
+            calls, ctx.r3.u32,
+            // The handle is descriptor+0x50, so the fields are read relative to
+            // that offset rather than to the handle itself. Reading them at the
+            // handle put every offset 0x50 bytes late, which reports fields as
+            // zero that are not.
+            ctx.r3.u32 ? cod3_load_u32(ctx.r3.u32 - 0x50 + 1408) : 0u,
+            ctx.r3.u32 ? cod3_load_u32(ctx.r3.u32 - 0x50 + 1412) : 0u);
         std::fflush(stderr);
     }
 }
