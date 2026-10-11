@@ -239,197 +239,75 @@ the kernel heap object and give the descriptor its vtable. The recompiled guest
 never does that because on hardware it never has to — so it is loader work, and
 loader work belongs in the runtime.
 
-**The interface is wider than four slots, and only one was ever filled.** The
-readers of the method fields:
+**A correction to the claim made in the previous commit.** That commit said
+the method interface was "wider than four slots" and listed five offsets with
+reader counts as though they were all methods. **That was wrong**, and checking it
+took one disassembly.
 
-| offset | readers | notable |
+`sub_82437108` reads `+1416`, `+1420` and `+1424` with **`lfs`**, not `lwz` —
+floating-point loads. Those are float fields, not function pointers. And
+`sub_823478F0`, the most frequent reader of `+1408`, uses it like this:
+
+```asm
+lwz r3,1408(r30)      ; loaded into r3, i.e. used as a POINTER ARGUMENT
+```
+
+So the actual layout at the tail of a heap descriptor is:
+
+| offset | what it is | set by |
 |---|---|---|
-| `+1404` | 1 | `sub_82437108` |
-| `+1408` | 16 | including `sub_823478F0` and `sub_823481D8` |
-| `+1412` | 5 | including `sub_82345E48` |
-| `+1416` | 1 | `sub_82437108` |
-| `+1420` | 5 | including `sub_822BC9F0` |
+| `+1408` | a pointer, passed as `r3` to another call | `sub_82347340` from a register |
+| `+1412` | the grow method — the only method | `sub_82347340` from `[r31+164]` |
+| `+1416` | `float32` | — |
+| `+1420` | `float32` | — |
+| `+1424` | `float32` | — |
 
-The grow trampoline installed one slot (`+1412`) and left the other four zero. If
-the fix is to populate the method table, it has to populate all of them —
-installing one method was always going to be a partial answer.
+**`+1408` turned out to be a critical section**, found by tracing where the
+value written into it comes from. `sub_82347340` stores `r21`, and the governing
+assignment is eight instructions earlier:
+
+```asm
+mr  r3,r29
+mr  r21,r29
+bl  __imp__RtlInitializeCriticalSection      ; r3 = the critical section
+stw r21,1408(r11)                           ; +1408 = that critical section
+```
+
+So `+1408` is a pointer to a lock guarding heap operations, and it is **null**
+because `sub_82347340` never runs. A field loaded into `r3` and passed straight
+through as an argument is exactly how a null-pointer fault at a small address
+happens, and the observed fault address is small.
+
+The runtime side of that link is sound: `RtlInitializeCriticalSection` is
+hand-implemented against a real Win32 `CRITICAL_SECTION`, keyed by guest address.
+The import is not the problem — the caller that would have invoked it is.
+
+**And a correction.** The previous commit implied `+1408` was a second unfilled
+method slot. It is not; it is a lock. So the shape of the fix is narrower than
+that commit claimed: there is one method (`+1412`) and one lock (`+1408`), both
+installed by the same never-running function.
 
 #### What to do next
 
-Point the descriptor's method slots at the correct slice of the `0x8208C600`
-table rather than at a hand-written trampoline. The table already contains the
-real implementations — `sub_823464E0`, the extend, is entry `0x8208C718`, right
-next to the walk at `0x8208C710`.
+Two things, in order.
 
-What is **not** yet known is *which* slice. Working it out needs the caller's
-view of the interface: which entry is method 0, and how the slots map onto
-entries. `sub_82437108` reads `+1404`, `+1416` and `+1420` together and is the
-best candidate for the code that copies a whole sub-interface, so disassembling
-it is the obvious next step.
+**Done:** `+1408` is resolved. It is a critical section, not a method, and the
+runtime implementation of `RtlInitializeCriticalSection` is already correct.
 
-This is the most actionable state the heap problem has been in: the cause is
-identified, the fix's shape is known, and the only open question is a table
-offset.
+**Remaining, and it is the whole of it:** `sub_82347340` never runs. It is the
+only thing that installs both `+1408` (the lock) and `+1412` (the grow method),
+and it has no callers except through the vtable at `0x8208C600`, where it is
+entry `0x8208C748`. Nothing holds a pointer to that entry and calls it, because
+the kernel heap object that owns the descriptor is never constructed.
 
-#### The heap is vtable-dispatched from 0x8208C600
+So the decision to make is narrow and concrete: **construct the owner object, or
+populate the two fields directly.** The owner is at `r31` in `sub_82347340`
+(`[r31+80]` is the descriptor, `[r31+164]` is the grow method), and its two
+offsets are known. Populating them directly is a small, testable change; letting
+the guest construct the object would be more faithful but requires finding who
+was supposed to dispatch entry `0x8208C748`.
 
-**This is the most structurally useful thing found so far**, and it came from a
-positive control rather than from reasoning.
-
-The unresolved-stub work produced a tool that scans the image for pointers to
-stub addresses. It found **none** — 9,660 stubs, zero references. A negative
-result is worthless on its own, so it was checked against addresses that are
-certainly referenced. The control passed: real function addresses were found at
-expected offsets. The negative is therefore real, and it is useful:
-
-**None of the 9,660 unresolved stubs is ever called.** They are dead weight, not
-holes in the port. An unresolved-branch count is *not* the explanation for any
-fault seen so far, which removes a whole category of hypothesis.
-
-The control addresses then turned out to be adjacent, which is what mattered:
-
-```
-0x8208C600  ->  0x82344A88   sub_82344A88
-0x8208C608  ->  0x82344B30   sub_82344B30
-...
-0x8208C708  ->  0x82345E48   sub_82345E48
-0x8208C710  ->  0x823460D8   sub_823460D8    <- the faulting walk
-0x8208C718  ->  0x823464E0   sub_823464E0    <- the "extend", probed earlier
-0x8208C720  ->  0x82346618   sub_82346618
-0x8208C738  ->  0x82346D98   sub_82346D98    <- heap init
-0x8208C748  ->  0x82347340   sub_82347340
-0x8208C758  ->  0x823478F0   sub_823478F0    <- the heap core
-0x8208C768  ->  0x823481D8   sub_823481D8    <- a guarded consumer
-```
-
-That is the Xbox 360 heap dispatch table. **Every function involved in the CRT
-heap fault is an entry in it**, called through a function pointer rather than
-directly. That reframes the whole investigation:
-
-- The faults are not "a function does the wrong thing" — they are
-  "a dispatched method received the wrong argument".
-- `sub_823460D8` and `sub_823464E0` are *adjacent entries*, so the walk and the
-  extend are two methods of the same object.
-- This is almost certainly what the `+1404/+1408/+1412/+1416` fields on the heap
-  descriptor are. `sub_824C2640` stores one value into all four, which is
-  exactly how a sub-interface is built: point four consecutive slots at four
-  consecutive table entries.
-
-**Not yet acted on.** The obvious next step is to stop installing a custom
-trampoline at `+1412` and instead point the descriptor's method slots at the
-correct four-entry slice of this table — the table already contains the real
-"extend" implementation (`sub_823464E0`), so a hand-written grow method may have
-been solving a problem the guest's own dispatch already solves. That is a
-concrete, testable change, and it follows from measurement rather than from a
-reading of the code.
-
-#### Two implementations built on inference, both reverted
-
-Worth recording because the failure mode is the project's most persistent one.
-
-`XamGetSystemVersion` and `XamLoaderGetLaunchData` are generated no-op stubs, and
-both are reached during boot. Both were implemented from a reading of their call
-sites. **Both attempts made boot worse — kernel APIs reached fell from 10 to 4 —
-and both were reverted.**
-
-What went wrong, precisely. The call site in `sub_82343C08` moves six registers
-into callee-saved registers, which reads as six out-pointers, and the caller
-then compares part of the return value against a constant:
-
-```asm
-rlwinm r11,r3,0,8,23      ; bits 8..23 of the version
-lis   r10,8               ; r10 = 0x00080000
-ori   r10,r10,41216       ; r10 = 0x0008A100
-cmplw cr6,r11,r10
-```
-
-That was read as a minimum-kernel-version gate, with a stub returning zero
-"failing" it. It is not a gate. `r11` is `0x000008A1` for any real version and
-`r10` is `0x0008A100` — three decimal orders of magnitude apart, and a masked
-value can never reach an unmasked one. The comparison cannot succeed whatever is
-returned.
-
-So the premise underneath was wrong as well: those six registers are evidently
-not six out-pointers, and writing through them is what cost the four APIs.
-
-The generated stubs stay. Returning zero is *wrong*, but it is wrong in a way
-that does not corrupt memory, and nothing established here is good enough to
-replace it. Reverting was correct after the first failure; the second attempt
-should not have been made at all.
-
-The generalisable lesson is already stated in this document after the heap
-endianness work, and this is the same lesson again: **implement what the guest
-demonstrates, leave alone what it does not.** Twice in this session a confident
-reading of a call site turned out to be wrong, and both times the only evidence
-was my own reasoning.
-
-#### An attempt that was abandoned
-
-The obvious follow-up to the above is to stop the crash handler printing a
-meaningless offset for a stub. It should report *"inside sub_823460D8's
-prologue"* rather than *"+1081"*, which is measured from four bytes of
-`.long 0x0`.
-
-**This was attempted and reverted.** The implementation scanned the generated
-`ppc_recomp.*.cpp` for function bodies consisting of a single `.long 0x0`. The
-logic was verified correct in isolation — a faithful reimplementation finds
-**9,660** stubs — and it still found zero at runtime. The discrepancy was never
-located: file discovery was confirmed working (`FindFirstFileA` finds them), and
-the parse was confirmed working (the same code finds all 9,660 under Python).
-
-Rather than leave a feature in the tree that reports nothing, it was reverted.
-It is recorded here so it is not re-attempted from scratch, and because the
-honest conclusion is that the runtime scan has a defect nobody has found yet —
-not that the approach is wrong.
-
-If it is picked up again, the useful first step is to print the *count and the
-first few body strings* from inside the C++ and compare them side by side with
-the Python reference in the same run. Doing that here produced a misleading
-reading, because the diagnostic printed embedded newlines and the output was
-truncated to the first eight lines — which made a correct `mnemonics=37` look
-like a failure.
-
-#### Current frontier: an unresolved 4-byte thunk
-
-The fault is now reported at `sub_823460D4 +1081`, and that offset is **not
-trustworthy**. `sub_823460D4` is a 4-byte stub containing only `.long 0x0`, and
-`sub_823460D8` is a weak alias immediately after it at +12. The registers at the
-crash are:
-
-```
-r3  = 0x846A8000     lr  = 0x823460E0
-r12 = 0x82346E34
-```
-
-`lr = 0x823460E0` is the instruction immediately after `bl 0x8234f28c` in
-`sub_823460D8`'s prologue, and `r12 = 0x82346E34` is the call site inside
-`sub_82346D98` — the same call previously identified as
-`bl 0x823460d8; lr = 0x82346E34`. So execution is in the **prologue of the real
-function**, being attributed to a stub 12 bytes earlier.
-
-Two readings, neither established:
-
-1. An indirect call genuinely lands at `0x823460D4`, i.e. 12 bytes before the
-   real entry. That would be a mis-resolved function pointer.
-2. The crash handler is attributing an in-prologue fault to the nearest preceding
-   symbol. The `+1081` is then meaningless, exactly as it is for any stub.
-
-Supporting (2): a search for `0x823460D4` in the loaded image as a pointer value
-returns **zero** occurrences, and no code in the image branches to it. If it were
-a real call target it would be referenced from somewhere.
-
-Not resolved. The cheap next step is to make the crash handler refuse to compute
-an offset inside a stub — report "inside `sub_823460D8` prologue" instead of a
-number computed from a 4-byte `.long`. That is a diagnostic-honesty fix rather
-than a port fix, but it stops this particular address being re-derived.
-
-### Heap fault tolerance (opt-in, `COD3_TOLERATE_HEAP_FAULT=1`)
-
-**This does not fix the region headers.** It makes the diagnosed faults
-survivable so the rest of the boot path can be worked on. Every skip is reported
-with its region, count and running total, and the total prints on any crash.
-Without the environment variable nothing changes.
-
-A port that reaches the renderer this way is not a working port. What it buys is
-the ability to work on everything downstream instead of everything upstream.
+The open question is narrower than the previous commit claimed: not "which slice
+of the table", but "what does `+1408` point at, and who was supposed to create
+the object that owns the descriptor".
 
