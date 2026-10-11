@@ -29,7 +29,18 @@ import re
 import struct
 import collections
 
-IMAGE = 'build/analysis/default.image'
+# The image dumped by the runtime, not by tools/xex_extract.py.
+#
+# xex_extract.py's BASIC block reconstruction produces a shorter image than the
+# XEX declares (11,829,248 bytes against a declared 0xC30000), so its .text is
+# truncated and every address past the cut decodes to the wrong bytes. The
+# runtime dump goes through the same loader XenonRecomp used, so it is the only
+# reliable input for offline analysis.
+#
+# Regenerate with:
+#   set COD3_DUMP_IMAGE=build\analysis\loaded.image
+#   build\host\COD3.exe --no-window
+IMAGE = 'build/analysis/loaded.image'
 IMAGE_BASE = 0x82000000
 
 

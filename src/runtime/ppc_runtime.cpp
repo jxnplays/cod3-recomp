@@ -822,6 +822,28 @@ bool cod3_load_image(const char* xex_path)
         "entry 0x%08X, %zu exported symbols\n",
         kGuestImageBase, static_cast<uint32_t>(image.size),
         static_cast<uint32_t>(image.entry_point), g_exported_symbols.size());
+
+    // Dump what we actually loaded. The standalone extractor in tools/ produces
+    // a shorter image than the XEX declares, so anything decoded against it can
+    // disagree with the bytes the recompiler compiled. This path is the same
+    // one XenonRecomp used, so it is the ground truth for offline analysis.
+    if (const char* dump = std::getenv("COD3_DUMP_IMAGE"); dump != nullptr)
+    {
+        if (FILE* f = std::fopen(dump, "wb"))
+        {
+            const size_t written =
+                std::fwrite(image.data.get(), 1, image.size, f);
+            std::fclose(f);
+            std::fprintf(stderr,
+                "[cod3] dumped %zu of %zu image bytes to %s\n",
+                written, image.size, dump);
+        }
+        else
+        {
+            std::fprintf(stderr, "[cod3] could not write %s\n", dump);
+        }
+    }
+
     return true;
 }
 
