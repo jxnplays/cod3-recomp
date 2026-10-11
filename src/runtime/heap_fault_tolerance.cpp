@@ -247,3 +247,60 @@ PPC_FUNC(sub_823481D8)
 
     __imp__sub_823481D8(ctx, base);
 }
+
+// -----------------------------------------------------------------------------
+// sub_82346D98 - where heap descriptors are created
+// -----------------------------------------------------------------------------
+//
+// It returns NtAllocateVirtualMemory's base + 0x50, so this is the first moment
+// the guest owns the descriptor. The grow method is installed HERE rather than
+// lazily at the allocator, because the consumers of the block list fault before
+// the allocator is entered and a lazy install never gets its chance.
+extern "C" void __imp__sub_82346D98(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_82346D98)
+{
+    PPC_FUNC_PROLOGUE();
+
+    __imp__sub_82346D98(ctx, base);
+
+    // The handle is descriptor + 0x50, and the method fields are relative to the
+    // descriptor, so 0x50 is removed rather than added. Without this the method
+    // lands 0x50 bytes past the structure it belongs to.
+    if (tolerate() && ctx.r3.u32 >= 0x50)
+    {
+        cod3_install_heap_grow_method(ctx.r3.u32 - 0x50);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// sub_82345E48 - the allocator
+// -----------------------------------------------------------------------------
+//
+// Tests [heap+1412] and, when it is zero, falls back to NtAllocateVirtualMemory
+// and returns the raw page as though it were an initialised block header. That
+// is the fault this whole path exists to prevent.
+//
+// A descriptor reaching here without a grow method should already have been
+// caught at creation, but this is the backstop: installing costs nothing and
+// the fallback returns memory that is wrong rather than memory that is absent.
+extern "C" void __imp__sub_82345E48(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_82345E48)
+{
+    PPC_FUNC_PROLOGUE();
+
+    if (tolerate())
+    {
+        const uint32_t heap = ctx.r4.u32;
+        const bool inHeap = heap >= g_guest_heap_base &&
+                            heap < g_guest_heap_base + g_guest_heap_size;
+
+        if (inHeap && cod3_load_u32(heap + 1412) == 0)
+        {
+            cod3_install_heap_grow_method(heap);
+        }
+    }
+
+    __imp__sub_82345E48(ctx, base);
+}
