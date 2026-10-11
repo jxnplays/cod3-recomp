@@ -290,6 +290,10 @@ uint32_t* g_vm_brk_slot();
 // unit initialisation order to get wrong.
 bool cod3_vm_quiet();
 
+// Print how many CRT heap allocations were skipped by the fault tolerance. Safe
+// to call from a crash reporter.
+void cod3_report_heap_tolerance();
+
 // The first address NtAllocateVirtualMemory returned, or 0 if it has not been
 // called. Used to inspect a descriptor the guest actually created, rather than
 // one inferred from where the heap is expected to start - the loader's own
