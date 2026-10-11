@@ -25,8 +25,36 @@
 uint8_t* g_base = nullptr;
 uint32_t g_guest_entry_point = 0;
 
-// Top of the guest stack, as a guest virtual address. See cod3_load_image().
+// The guest image is mapped at its real virtual address (0x82000000), so g_base
+// is null and guest addresses are host addresses. See cod3_load_image().
+//
+// Layout of the single reservation:
+//
+//   0x82000000  +---------------------------+
+//               |  PE image (SizeOfImage)   |
+//   stack_base  +---------------------------+
+//               |  guest stack (64 MiB)     |
+//   heap_base   +---------------------------+
+//               |  guest heap (256 MiB)     |
+//               +---------------------------+
+uint32_t g_guest_stack_base = 0;
 uint32_t g_guest_stack_top = 0;
+uint32_t g_guest_heap_base = 0;
+uint32_t g_guest_heap_size = 0;
+
+// The address the title is linked to load, and therefore the address the image
+// must occupy. This comes from the XEX IMAGE_BASE_ADDRESS optional header and
+// is filled in during cod3_load_image().
+uint32_t kGuestImageBase = 0x82000000;
+
+// Backing store for the pool allocator: a pointer and length into the guest
+// heap region, set by cod3_load_image(). See cod3_pool_alloc().
+static uint8_t* g_heap_ptr = nullptr;
+static size_t g_heap_size = 0;
+
+// A reserved (but inaccessible) block at address 0, used to absorb guest
+// accesses that dereference an uninitialised register. See cod3_load_image().
+void* g_zero_guard = nullptr;
 
 // Guest addresses of every symbol the XEX exports. Populated by
 // cod3_load_image(); cod3_resolve_private_export() indexes into it by ordinal.
@@ -83,30 +111,142 @@ bool cod3_load_image(const char* xex_path)
     // The guest image must be page aligned: the generated prologues assert
     // ((uintptr_t)base & 0x1F) == 0.
     //
-    // We reserve extra space *past* the image for the guest stack. The guest
-    // addresses stack memory as `base + guest_va`, so the stack has to live in
-    // the same allocation - pointing r1 into the image itself would have the
-    // guest overwrite its own .text with return addresses.
-    constexpr size_t kGuestStackSize = 16 * 1024 * 1024;
+    // Sizing matters here. image.size is the XEX security block's imageSize
+    // (0xC30000), but that is NOT the full extent the guest can address: the
+    // PE's SizeOfImage is 0xC98000 and the last section (.reloc) ends at
+    // 0xC4D208. The difference is real addressable memory the kernel maps and
+    // the title touches during boot, so the allocation has to cover the PE
+    // SizeOfImage, not the XEX imageSize.
+    //
+    // SizeOfImage is read from the in-memory PE header (the same DOS/PE/NT
+    // offsets the image was mapped from), rounded up to the section alignment.
+    size_t image_extent = image.size;
+    {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image.data.get());
+        if (dos->e_magic == IMAGE_DOS_SIGNATURE)
+        {
+            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(
+                image.data.get() + dos->e_lfanew);
+            if (nt->Signature == IMAGE_NT_SIGNATURE)
+            {
+                const size_t size_of_image = nt->OptionalHeader.SizeOfImage;
+                const size_t section_align = nt->OptionalHeader.SectionAlignment;
+                if (size_of_image > image_extent)
+                {
+                    std::fprintf(stderr,
+                        "[cod3] PE SizeOfImage 0x%zX exceeds XEX imageSize 0x%zX; "
+                        "extending the mapping\n",
+                        size_of_image, image.size);
+                    image_extent = size_of_image;
+                }
+                if (section_align != 0)
+                {
+                    image_extent = (image_extent + section_align - 1)
+                                   & ~(static_cast<size_t>(section_align) - 1);
+                }
+            }
+        }
+    }
 
-    void* mem = VirtualAlloc(nullptr, image.size + kGuestStackSize,
-                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    // Reserve the guest address space at its REAL virtual address.
+    //
+    // The recompiled code forms every memory reference as `base + guest_va`:
+    //
+    //     #define PPC_STORE_U32(x, y) *(volatile uint32_t*)(base + (x)) = ...
+    //
+    // and `x` is a full 32-bit Xbox 360 virtual address (0x82BF0000, ...),
+    // because PowerPC registers hold real VAs rather than offsets. The image is
+    // therefore mapped exactly where the title is linked to load, and `base` is
+    // the (non-null, 32-byte aligned) start of that mapping.
+    //
+    // `base` is deliberately NOT nullptr. The generated prologues assert
+    // (base & 0x1F) == 0, and passing a null `base` lets the optimiser assume
+    // `base + x` is non-null, which miscompiles the pointer arithmetic.
+    // GUEST ADDRESS SPACE BUDGET
+    //
+    // The guest address space is 32-bit: registers hold 32-bit virtual
+    // addresses, and the generated code computes base+guest_va in 32-bit
+    // arithmetic. The whole reservation MUST therefore stay below 4 GiB.
+    //
+    // The image ends at 0x82C98000, so stack+heap must fit in the remaining
+    // space up to 0xC0000000 (well below 0xFFFFFFFF, leaving room for the
+    // title's own high addresses). An earlier build used 64 MiB stack +
+    // 256 MiB heap, which pushed the stack top past 0x80000000; the guest then
+    // saw a wrapped, nonsensical r1 and the CRT faulted on its first store.
+    constexpr size_t kGuestStackSize = 16 * 1024 * 1024;
+    constexpr size_t kGuestHeapSize = 384 * 1024 * 1024;
+
+    // The image must sit at a 32-byte aligned address; PPC_IMAGE_BASE (0x82000000)
+    // already satisfies that.
+    const size_t imageBase = kGuestImageBase;
+    const size_t stackBase = imageBase + image_extent;
+    const size_t heapBase = stackBase + kGuestStackSize;
+    const size_t reserve = image_extent + kGuestStackSize + kGuestHeapSize;
+
+    // The whole guest reservation must stay inside the 32-bit address space,
+    // because the title addresses it with 32-bit registers. Getting this wrong
+    // silently truncates guest pointers.
+    if (imageBase + reserve > 0xFFFFFFFFull)
+    {
+        std::fprintf(stderr,
+            "[cod3] guest memory budget overflows 32-bit address space: "
+            "0x%08X + 0x%zX > 4 GiB. Reduce the stack/heap sizes.\n",
+            static_cast<uint32_t>(imageBase), reserve);
+        return false;
+    }
+
+    void* mem = VirtualAlloc(reinterpret_cast<void*>(static_cast<uintptr_t>(imageBase)),
+                             reserve, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (mem == nullptr)
     {
         std::fprintf(stderr,
-            "[cod3] failed to reserve 0x%zX bytes for the guest image + stack\n",
-            image.size + kGuestStackSize);
+            "[cod3] could not reserve 0x%zX bytes at the guest image base "
+            "0x%08X (Win32 error %lu).\n"
+            "[cod3] The image must be mapped at its real virtual address because "
+            "the recompiled code forms references as base+guest_VA.\n",
+            reserve, imageBase, GetLastError());
         return false;
     }
 
     std::memcpy(mem, image.data.get(), image.size);
-    g_base = static_cast<uint8_t*>(mem);
+
+    // base == 0 is required: the generated code computes `base + guest_va`, and
+    // guest_va is the full Xbox 360 virtual address (e.g. 0x82BF0000). Only
+    // base == 0 makes that resolve to the byte the guest intended. The image is
+    // mapped at PPC_IMAGE_BASE, so guest VAs and host addresses coincide.
+    //
+    // This is safe with the generated prologues: PPC_FUNC_PROLOGUE asserts
+    // (base & 0x1F) == 0, which a null base satisfies.
+    g_base = nullptr;
     g_guest_entry_point = image.entry_point;
 
-    // PowerPC stacks grow downwards, so r1 starts at the top of the region.
-    // Leave one guard page at the very top so an overflow faults cleanly instead
-    // of silently walking into unrelated heap.
-    g_guest_stack_top = static_cast<uint32_t>(image.size + kGuestStackSize - 0x10000);
+    // The stack sits above the image so r1 cannot point into .text, and the
+    // heap above that. Both are addressed as guest VAs.
+    g_guest_stack_base = static_cast<uint32_t>(stackBase);
+    g_guest_stack_top = static_cast<uint32_t>(stackBase + kGuestStackSize - 0x10000);
+    g_guest_heap_base = static_cast<uint32_t>(heapBase);
+    g_guest_heap_size = static_cast<uint32_t>(kGuestHeapSize);
+
+    g_heap_ptr = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(heapBase));
+    g_heap_size = kGuestHeapSize;
+
+    // Verify the layout is monotonic. A truncated or miscomputed stack top is
+    // invisible until the CRT faults on its first store, so it is checked here
+    // where the cause is obvious.
+    if (!(g_guest_stack_base < g_guest_stack_top) ||
+        !(g_guest_stack_top < g_guest_heap_base) ||
+        static_cast<uint32_t>(heapBase + kGuestHeapSize) <= g_guest_heap_base)
+    {
+        std::fprintf(stderr,
+            "[cod3] guest memory layout is broken:\n"
+            "       image 0x%08X..0x%08X\n"
+            "       stack 0x%08X..0x%08X\n"
+            "       heap  0x%08X..0x%08X\n",
+            static_cast<uint32_t>(imageBase), static_cast<uint32_t>(stackBase),
+            g_guest_stack_base, g_guest_stack_top,
+            g_guest_heap_base, static_cast<uint32_t>(heapBase + kGuestHeapSize));
+        return false;
+    }
 
     // Record exported symbols so XexGetProcedureAddress can resolve them.
     // Image::symbols is a multiset<Symbol>, ordered by address.
@@ -119,9 +259,9 @@ bool cod3_load_image(const char* xex_path)
     std::sort(g_exported_symbols.begin(), g_exported_symbols.end());
 
     std::fprintf(stderr,
-        "[cod3] loaded guest image: base=0x%08X size=0x%08X entry=0x%08X "
-        "(%zu exported symbols)\n",
-        static_cast<uint32_t>(image.base), static_cast<uint32_t>(image.size),
+        "[cod3] loaded guest image at 0x%08X (base=0), image 0x%08X bytes, "
+        "entry 0x%08X, %zu exported symbols\n",
+        kGuestImageBase, static_cast<uint32_t>(image.size),
         static_cast<uint32_t>(image.entry_point), g_exported_symbols.size());
     return true;
 }
@@ -211,15 +351,22 @@ void cod3_run_guest_function(uint32_t address, PPCContext& ctx)
         return;
     }
 
+    // base is null because the guest image is mapped at its real virtual
+    // address; the callee forms every reference as base + guest_va.
     r.fn(ctx, g_base);
 }
 
 // -----------------------------------------------------------------------------
 // Import tracing
 // -----------------------------------------------------------------------------
+//
+// The runtime's single most useful diagnostic. Once the port gets far enough
+// to run, every kernel API it reaches that is still a stub is recorded here,
+// so the trace is a prioritised work list: whatever the title actually calls is
+// what has to be implemented next.
 
 static std::unordered_map<std::string, uint64_t> g_import_counts;
-static std::vector<std::string> g_import_first_seen;
+static std::vector<std::pair<std::string, uint64_t>> g_import_order;
 static CRITICAL_SECTION g_trace_lock;
 static bool g_trace_lock_ready = false;
 
@@ -245,11 +392,19 @@ void cod3_trace_unimplemented(const char* name)
     if (it == g_import_counts.end())
     {
         g_import_counts.emplace(name, 1);
-        g_import_first_seen.push_back(name);
+        g_import_order.emplace_back(name, 1);
     }
     else
     {
         ++it->second;
+        for (auto& entry : g_import_order)
+        {
+            if (entry.first == name)
+            {
+                ++entry.second;
+                break;
+            }
+        }
     }
     LeaveCriticalSection(&g_trace_lock);
 
@@ -267,8 +422,7 @@ void cod3_dump_import_trace()
         return;
     }
 
-    std::vector<std::pair<std::string, uint64_t>> entries(
-        g_import_counts.begin(), g_import_counts.end());
+    auto entries = g_import_order;
     std::sort(entries.begin(), entries.end(),
               [](const auto& a, const auto& b) {
                   if (a.second != b.second) return a.second > b.second;

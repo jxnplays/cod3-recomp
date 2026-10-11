@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 //  COD3 Recomp - hand-written Xbox 360 kernel implementations
 //
 //  These are the kernel APIs Call of Duty 3 depends on early enough that a
@@ -21,13 +21,15 @@
 // Helpers for reading guest pointers
 // -----------------------------------------------------------------------------
 
-// The guest uses 32-bit pointers. Any pointer handed to us is a guest virtual
-// address and must be rebased through `base` before it can be dereferenced.
+// The guest uses 32-bit pointers, and the guest image is mapped at its real
+// virtual address, so a guest virtual address IS a valid host address. These
+// helpers therefore return the argument unchanged.
 #define GUEST_ARG_U32(ctx, n) (*reinterpret_cast<const uint32_t*>( \
     reinterpret_cast<const uint8_t*>(&(ctx)) + sizeof(PPCRegister) * (n)))
 
 // Return a guest pointer argument (r3, r4, ... by index).
-#define GUEST_PTR(ctx, n) (g_base + GUEST_ARG_U32(ctx, n))
+#define GUEST_PTR(ctx, n) (reinterpret_cast<void*>( \
+    static_cast<uintptr_t>(GUEST_ARG_U32(ctx, n))))
 
 // Set the integer return value.
 #define SET_R3(ctx, v) ((ctx).r3.u64 = (uint64_t)(v))
@@ -404,7 +406,7 @@ PPC_FUNC(__imp__KeWaitForMultipleObjects)
     for (uint32_t i = 0; i < count; ++i)
     {
         const uint32_t objAddr = *reinterpret_cast<const uint32_t*>(
-            g_base + objectsAddr + i * sizeof(uint32_t));
+            (objectsAddr + i * sizeof(uint32_t)));
         auto& s = sync_for(objAddr);
         if (s.handle != nullptr)
             handles.push_back(s.handle);
@@ -486,8 +488,12 @@ static HANDLE create_guest_thread(uint32_t startRoutine, uint32_t param,
 
     start->startRoutine = startRoutine;
     start->contextAddr = param;
-    start->stackBase = static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(stack) - reinterpret_cast<uintptr_t>(g_base) + stackSize);
+
+    // The guest stack pointer is the TOP of the block, because PowerPC stacks
+    // grow downwards. cod3_pool_alloc returns a guest VA (the heap is mapped
+    // inside the guest reservation), so this arithmetic is plain guest VA math.
+    start->stackBase = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stack))
+                       + stackSize;
 
     const DWORD threadSize = stackSize + 0x10000;
     HANDLE h = CreateThread(nullptr, threadSize, guest_thread_trampoline, start,
@@ -509,7 +515,7 @@ PPC_FUNC(__imp__ExCreateThread)
 
     HANDLE h = create_guest_thread(startRoutine, startArg, stackSize, 1);
     if (outHandle != 0)
-        *reinterpret_cast<uint32_t*>(g_base + outHandle) = GUEST_HANDLE(h);
+        *reinterpret_cast<uint32_t*>(outHandle) = GUEST_HANDLE(h);
     ctx.r3.u64 = (h != nullptr) ? STATUS_SUCCESS : 0xC0000071;
 }
 
@@ -607,7 +613,7 @@ PPC_FUNC(__imp__MmGetPhysicalAddress)
     {
         // Xbox 360 physical addresses are 32-bit; the high bit of the
         // descriptor is the "no-cache"/device bit, which we leave clear.
-        *reinterpret_cast<uint32_t*>(g_base + out) = phys;
+        *reinterpret_cast<uint32_t*>(out) = phys;
     }
     ctx.r3.u64 = 0;
 }
@@ -615,40 +621,42 @@ PPC_FUNC(__imp__MmGetPhysicalAddress)
 PPC_FUNC(__imp__MmMapIoSpace)
 {
     // (physicalAddress, length, cacheProtect)
-    // The title maps the GPU/HDMI register ranges here. We cannot honour real
-    // physical addresses, so hand back a zeroed scratch buffer of the requested
-    // length and record that the mapping was faked.
-    const uint32_t length = ctx.r4.u32;
-    void* mem = VirtualAlloc(nullptr, length ? length : 0x1000,
-                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    //
+    // This is the route the title uses to reach the Xenos GPU registers, so it
+    // is the natural hook for emulating the GPU (see docs/GRAPHICS.md). Nothing
+    // is emulated yet: the region is ordinary RAM that the guest can read and
+    // write, and every register write is discarded.
+    //
+    // The buffer must come from the guest heap so the returned value is a real
+    // guest VA the title can store in a register and pass around.
+    const uint32_t length = (ctx.r4.u32 != 0) ? ctx.r4.u32 : 0x1000;
+    void* mem = cod3_pool_alloc(length, 'MMIO', 0);
     if (mem == nullptr)
     {
         SET_R3(ctx, 0);
         return;
     }
-    std::memset(mem, 0, length ? length : 0x1000);
+    std::memset(mem, 0, length);
+
     std::fprintf(stderr,
-        "[cod3] MmMapIoSpace(phys=0x%08X, len=0x%X) -> scratch buffer %p "
-        "(hardware MMIO not mapped)\n",
-        ctx.r3.u32, length, mem);
-    SET_R3(ctx, static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(mem) - reinterpret_cast<uintptr_t>(g_base)));
+        "[cod3] MmMapIoSpace(phys=0x%08X, len=0x%X) -> guest RAM at 0x%08X "
+        "(Xenos MMIO NOT emulated; register writes are discarded)\n",
+        ctx.r3.u32, length, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(mem)));
+    SET_R3(ctx, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(mem)));
 }
 
 PPC_FUNC(__imp__MmMapIoSpaceEx)
 {
     // Same as MmMapIoSpace but with an explicit section attributes argument.
-    const uint32_t length = ctx.r4.u32;
-    void* mem = VirtualAlloc(nullptr, length ? length : 0x1000,
-                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    const uint32_t length = (ctx.r4.u32 != 0) ? ctx.r4.u32 : 0x1000;
+    void* mem = cod3_pool_alloc(length, 'MMIO', 0);
     if (mem == nullptr)
     {
         SET_R3(ctx, 0);
         return;
     }
-    std::memset(mem, 0, length ? length : 0x1000);
-    SET_R3(ctx, static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(mem) - reinterpret_cast<uintptr_t>(g_base)));
+    std::memset(mem, 0, length);
+    SET_R3(ctx, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(mem)));
 }
 
 PPC_FUNC(__imp__MmUnmapIoSpace)
@@ -690,7 +698,7 @@ PPC_FUNC(__imp__XexGetProcedureAddress)
     }
 
     if (outPtr != 0)
-        *reinterpret_cast<uint32_t*>(g_base + outPtr) = resolved;
+        *reinterpret_cast<uint32_t*>(outPtr) = resolved;
 
     // Returning 0 here means "not found"; the caller checks the out param.
     ctx.r3.u64 = 0;
@@ -720,16 +728,25 @@ PPC_FUNC(__imp__XexGetTitleId)
 
 PPC_FUNC(__imp__DbgPrint)
 {
-    // The format string is a guest pointer into .rdata; decode it without
-    // handing untrusted guest data to printf.
+    // The format string is a guest pointer into .rdata. The guest prints a LOT
+    // during boot, so only the presence of the call is logged; decoding the
+    // format string into a host printf would mean trusting guest data.
     const char* fmt = reinterpret_cast<const char*>(GUEST_PTR(ctx, 0));
-    if (fmt == nullptr || reinterpret_cast<uintptr_t>(fmt) <
-        reinterpret_cast<uintptr_t>(g_base))
-        return;
 
-    std::fputs("[xbox] ", stderr);
-    std::fputc('\n', stderr);
-    (void)fmt;
+    std::fputs("[xbox] DbgPrint(", stderr);
+    if (fmt != nullptr)
+    {
+        // Print the format string read defensively: it is guest memory and may
+        // not be NUL terminated.
+        const size_t maxLen = 200;
+        char buf[201];
+        size_t i = 0;
+        for (; i < maxLen && fmt[i] != '\0'; ++i)
+            buf[i] = (fmt[i] >= 0x20 && fmt[i] < 0x7F) ? fmt[i] : '.';
+        buf[i] = '\0';
+        std::fputs(buf, stderr);
+    }
+    std::fputs(")\n", stderr);
 }
 
 PPC_FUNC(__imp__RtlNtStatusToDosError)
@@ -760,10 +777,10 @@ PPC_FUNC(__imp__XGetVideoMode)
     const uint32_t width  = (ctx.r3.u32 != 0) ? ctx.r3.u32 : 0;
     uint32_t dw = 0, dh = 0, dr = 0, df = 0;
     cod3_host_display_mode(&dw, &dh, &dr, &df);
-    if (width)  *reinterpret_cast<uint32_t*>(g_base + ctx.r3.u32) = dw;
-    if (ctx.r4.u32) *reinterpret_cast<uint32_t*>(g_base + ctx.r4.u32) = dh;
-    if (ctx.r5.u32) *reinterpret_cast<uint32_t*>(g_base + ctx.r5.u32) = dr;
-    if (ctx.r6.u32) *reinterpret_cast<uint32_t*>(g_base + ctx.r6.u32) = df;
+    if (width)  *reinterpret_cast<uint32_t*>(ctx.r3.u32) = dw;
+    if (ctx.r4.u32) *reinterpret_cast<uint32_t*>(ctx.r4.u32) = dh;
+    if (ctx.r5.u32) *reinterpret_cast<uint32_t*>(ctx.r5.u32) = dr;
+    if (ctx.r6.u32) *reinterpret_cast<uint32_t*>(ctx.r6.u32) = df;
     ctx.r3.u64 = 0;
 }
 
@@ -778,11 +795,12 @@ PPC_FUNC(__imp__VdGetCurrentDisplayInformation)
     {
         // The real structure is 0x28 bytes; fill in the fields the NGL layer
         // actually reads (width/height at the front).
-        std::memset(g_base + out, 0, 0x28);
-        *reinterpret_cast<uint32_t*>(g_base + out + 0x00) = dw;
-        *reinterpret_cast<uint32_t*>(g_base + out + 0x04) = dh;
-        *reinterpret_cast<uint32_t*>(g_base + out + 0x08) = 0;   // non-interlaced
-        *reinterpret_cast<uint32_t*>(g_base + out + 0x0C) = 0;
+        uint8_t* const p = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(out));
+        std::memset(p, 0, 0x28);
+        *reinterpret_cast<uint32_t*>(p + 0x00) = dw;
+        *reinterpret_cast<uint32_t*>(p + 0x04) = dh;
+        *reinterpret_cast<uint32_t*>(p + 0x08) = 0;   // non-interlaced
+        *reinterpret_cast<uint32_t*>(p + 0x0C) = 0;
     }
     ctx.r3.u64 = 0;
 }
@@ -801,7 +819,7 @@ PPC_FUNC(__imp__VdQueryVideoMode)
     uint32_t dw = 0, dh = 0, dr = 0, df = 0;
     cod3_host_display_mode(&dw, &dh, &dr, &df);
     if (out != 0)
-        std::memset(g_base + out, 0, 0x20);
+        std::memset(reinterpret_cast<void*>(static_cast<uintptr_t>(out)), 0, 0x20);
     ctx.r3.u64 = 0;
 }
 
@@ -819,7 +837,7 @@ PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
 {
     const uint32_t out = ctx.r3.u32;
     if (out != 0)
-        *reinterpret_cast<uint32_t*>(g_base + out) = 0x000A0000u; // gamma 1.0
+        *reinterpret_cast<uint32_t*>(out) = 0x000A0000u; // gamma 1.0
     ctx.r3.u64 = 0;
 }
 

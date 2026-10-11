@@ -158,11 +158,12 @@ void cod3_install_crash_handler()
         }
 
         std::fprintf(stderr,
-            "[cod3]   guest image : %p (entry 0x%08X)\n"
+            "[cod3]   guest image : mapped at 0x%08X, size 0x%08X "
+            "(entry 0x%08X)\n"
             "[cod3]   pool allocs : %zu live\n"
             "================================================================\n",
-            static_cast<void*>(g_base), g_guest_entry_point,
-            cod3_pool_live_allocations());
+            kGuestImageBase, g_guest_heap_base,
+            g_guest_entry_point, cod3_pool_live_allocations());
 
         cod3_dump_import_trace();
         std::fflush(stderr);

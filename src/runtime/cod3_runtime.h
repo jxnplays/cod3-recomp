@@ -19,22 +19,33 @@
 // Guest memory
 // -----------------------------------------------------------------------------
 
-// Pointer to the first byte of the loaded guest image. PPC_LOAD_U32(x) and
-// friends index off this directly, so it must remain stable for process life.
+// Pointer to the first byte of the loaded guest image, or NULL.
+//
+// IMPORTANT: this is always NULL by design. The recompiled code computes every
+// memory reference as `base + guest_va`, where guest_va is a full Xbox 360
+// virtual address (e.g. 0x82BF0000). To make that resolve, the guest image is
+// mapped at its real virtual address (0x82000000) so that guest addresses and
+// host addresses coincide and base == 0.
+//
+// Runtime code that dereferences a guest pointer must therefore use the guest
+// address directly (or the cod3_guest_ptr helpers), NOT `g_base + addr`.
 extern uint8_t* g_base;
 
-// Load `default.xex` into guest memory, building it through XenonUtils so the
-// image is byte-for-byte identical to the one XenonRecomp translated.
-// Returns false and prints a diagnostic on failure.
+// Map the XEX into guest memory at its real virtual address, using the same
+// XenonUtils loader the recompiler used. Returns false on failure.
 bool cod3_load_image(const char* xex_path);
 
-// Entry point of the loaded guest image (absolute guest virtual address).
+// Entry point of the loaded guest image (guest virtual address).
 extern uint32_t g_guest_entry_point;
 
-// Top of the guest stack region, as a guest virtual address. The region is
-// reserved immediately after the image, so guest addresses above
-// PPC_IMAGE_SIZE address the stack rather than the image itself.
+// Guest memory layout, established by cod3_load_image().
+extern uint32_t g_guest_stack_base;
 extern uint32_t g_guest_stack_top;
+extern uint32_t g_guest_heap_base;
+extern uint32_t g_guest_heap_size;
+
+// The address the title is linked to load (XEX IMAGE_BASE_ADDRESS).
+extern uint32_t kGuestImageBase;
 
 // -----------------------------------------------------------------------------
 // Import tracing
@@ -79,13 +90,13 @@ extern uint32_t g_irql;
 // Pool allocator
 // -----------------------------------------------------------------------------
 
-// Xbox 360 pool allocations back the game's entire heap. These forward to a
-// simple tagged allocator so that tag/usage reporting works and so leaks are
-// visible at shutdown.
+// Xbox 360 pool allocations back the game's entire heap. These serve memory
+// from the guest heap region and return guest virtual addresses, because the
+// guest stores pointers in 32-bit registers and hands them back to us later.
 void* cod3_pool_alloc(uint32_t bytes, uint32_t tag, uint32_t flags);
 void cod3_pool_free(void* ptr);
 
-// Expose the number of live allocations (used by the leak check on shutdown).
+// Number of live pool allocations (used by the leak check on shutdown).
 size_t cod3_pool_live_allocations();
 
 // -----------------------------------------------------------------------------
