@@ -228,33 +228,38 @@ Nothing in this repository pretends to work when it does not:
 
 ## Ordered path to a playable build
 
-1. **Resolve the 92 unresolved branch targets.** This is now the single largest
+1. **Resolve the 92 unresolved branch targets.** This is the single largest
    blocker, and it is much smaller than it first appears. XenonRecomp emitted
    `ERROR <addr>` for 9,270 branches, but those collapse to only **92 distinct
    target addresses**, and **8,383 of the 9,270 (90%) fall in one 64-byte
-   region at `0x8234F2C4`-`0x8234F300`.**
+   region at `0x8234F2B4`-`0x8234F2EC`.**
 
-   That region is a CRT function epilogue and has been decoded from the guest
-   image. It is ordinary PowerPC - `stfd`/`lfd` pairs spilling and restoring
-   `f1`/`f3`, `mfspr r12,8` (the stack pointer), `lwz`/`stw` on `r1`, and a
-   `blr`:
+   That region is the tail of the CRT's non-volatile register helper, which
+   begins at **`0x8234F21C`** (`stwu r1,-112(r1)`) and runs to `0x8234F308`.
+   It is ordinary, decodable PowerPC - stack-pointer restore, `lwz`/`stw`
+   spills on `r1`, `stfd`/`lfd` of `f30`/`f31`, the `mtspr` family
+   (`0x7FC3F378` = `mtlr r30`, which occurs 3,342 times across `.text`, so it
+   is a pervasive valid instruction and not corrupted data), and `blr`:
 
    ```
-   0x8234F2C4: EBE1FFF0  stfd  f3,-16(r1)
+   0x8234F2B0: 807F0050  lwz   r3,80(r31)
+   0x8234F2B4: 383F0070  addi  r1,r31,112
+   0x8234F2B8: 8181FFF8  lwz   r12,-8(r1)
+   0x8234F2BC: 7D8803A6  mtlr  r12
+   0x8234F2C0: EBC1FFE8  stfd  f30,-24(r1)
+   0x8234F2C4: EBE1FFF0  stfd  f31,-16(r1)
    0x8234F2C8: 4E800020  blr
-   0x8234F2CC: FBE1FFF8  lfd   f3,-8(r1)
-   0x8234F2D0: 3BECFF90  addi  r22,r22,-112
-   0x8234F2D4: FBC1FFF0  lfd   f1,-16(r1)
-   0x8234F2D8: 7D8802A6  mfspr r12,8
-   0x8234F2DC: 9181FFE8  lwz   r12,-24(r1)
-   0x8234F2E0: 9421FF90  stw   r4,-112(r1)
-   0x8234F2E4: 83DF0084  lwz   r30,132(r31)
    ```
 
-   XenonRecomp treats these as unresolvable and truncates the calling function
-   at that point, which is why functions like `sub_823478F0` (the CRT heap
-   allocator) simply stop mid-body. Writing these ~12 epilogue fragments by
-   hand should unblock the large majority of the CRT.
+   XenonRecomp cannot resolve branches into this region and truncates the
+   calling function at that point, which is why functions like `sub_823478F0`
+   (the CRT heap allocator) simply stop mid-body.
+
+   **Note:** earlier drafts of this document claimed the `0x8234F2xx` bytes were
+   encrypted `.text`. That was wrong - they are valid instructions, misdecoded
+   by hand. `tools/find_reg_helpers.py` reports coverage against the real
+   unresolved-branch set; it currently matches none, which is expected because
+   the signature it looks for is the *whole* helper rather than its tail.
 2. **Finish the loader context graph.** The CRT walks a descriptor chain the
    Xbox 360 XEX loader populates before the entry point. The first links are
    published; the 48-byte vtable and its dispatch entries are not. The
