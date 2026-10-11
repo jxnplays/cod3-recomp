@@ -2,6 +2,10 @@
 
 ![COD3 Recomp Logo](docs/logo.png)
 
+<div align="center">
+  <img src="docs/status.svg?v=1" width="900">
+</div>
+
 Static recompilation of **Call of Duty 3** (Xbox 360) to a native Windows PC
 binary.
 
