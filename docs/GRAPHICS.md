@@ -1,40 +1,91 @@
 # Graphics hooks and modernization plan
 
-## The constraint that shapes everything
+## The constraint, and the way around it
 
 Call of Duty 3 imports **no Direct3D functions whatsoever**. Verified two ways:
 
-1. The 179 resolved imports (`tools/gen_import_stubs.py` output, derived from
-   XenonRecomp's own symbol resolution) contain zero `D3D*` symbols. The only
+1. The 179 resolved imports contain zero `D3D*` symbols. The only
    graphics-adjacent kernel imports are eight display-mode calls:
    `VdGetCurrentDisplayGamma`, `VdGetCurrentDisplayInformation`,
    `VdPersistDisplay`, `VdQueryVideoFlags`, `VdQueryVideoMode`, `VdSetDisplayMode`,
    `XGetVideoMode`, `XamReadTileToTexture`.
-2. String extraction from the extracted PE image finds the Xbox 360 graphics
-   stack's own debug strings compiled into `.text`:
+2. The Xbox 360 graphics stack (NGL, the Xenos D3D9 derivative) is **statically
+   linked** into the executable, complete with its own debug strings:
+   * `[1.1]NGL 3.0.0`
    * `nglPresent`, `nglBackBuffer`
    * `"D3D: GPU initialization (HSIO training) has failed so no graphics will render."`
-   * `"ERR[D3D]: Unanticipated CPU_INTERRUPT. Sign of a corrupt command buffer?"`
    * `"The GPU is hung! D3D version is %i.%i %s, kernel is %i, frame is %i."`
-   * `"NGL: Texture %s destroyed while still referenced by the async renderer."`
+   * 81 `ngl*` debug strings in total
 
-**Consequence:** the conventional approach — wrap D3D9/D3D11 and upscale — has
-no boundary to attach to. The Xbox 360's Xenos GPU runs a command processor fed
-by a proprietary register bus, and the layer that drives it is *inside the
-executable we recompiled*. Any graphics work therefore has to happen at one of
-three levels, all inside our own code:
+So there is no *import* boundary to wrap. But that does **not** mean there is no
+graphics boundary at all, and an earlier version of this document wrongly
+concluded that Xenos GPU emulation was the only option. It is not.
+
+## The approach: intercept NGL, drive real D3D9
+
+Measured on this image: **211 vtable-like function-pointer tables live in
+`.rdata`**, the largest with 629 entries. That is a COM-style object model, and
+it means the title calls into the graphics stack *through method tables*, above
+the point where anything becomes Xenos-specific.
+
+That gives the shape of the solution:
 
 ```
   +----------------------------------------------------------+
   |  Call of Duty 3 renderer (game code)                     |
   +----------------------------------------------------------+
-  |  NGL — Xbox 360 D3D9 derivative, statically linked        |   <- level C
+  |  NGL method tables  <-- INTERCEPT HERE                   |   level C
   +----------------------------------------------------------+
-  |  Xenos command processor + register bus                    |   <- level B
+  |  Xenos command processor + register bus (never reached)   |   level B
   +----------------------------------------------------------+
-  |  Vd* / XGetVideoMode kernel calls (the only real boundary)|   <- level A
+  |  Vd* / XGetVideoMode kernel calls                         |   level A
   +----------------------------------------------------------+
 ```
+
+At each intercepted flush point the guest device's full state is read out and
+translated into calls on a real `IDirect3DDevice9`. The Xenos command processor
+never has to be emulated.
+
+### Hook the flush points, not the setters
+
+The guest's D3D setters should be left alone. They only write shadow state, emit
+no commands, and several are inlined into engine code where they could not be
+hooked anyway. Intercepting them would be both fragile and unnecessary.
+
+Instead, hook where work is actually submitted:
+
+* `Draw*` (primitive, indexed, immediate)
+* `Clear`
+* `Resolve`
+* `Swap` / present
+* constant-buffer updates and resource registration entry points
+
+At each draw, read the complete current state from the guest device and emit
+equivalent D3D9 calls. State that was set through unhooked setters is still
+correct, because it was written to the guest's own shadow state and is read back
+at submit time.
+
+### What actually has to be built
+
+1. **Identify the NGL method tables** and map their entries to D3D9 semantics.
+   The vtables are unlabelled, so this means reading the device object's
+   construction and matching call sites.
+2. **A guest device shadow** mirroring the guest's own state, so the full state
+   can be read at each flush point.
+3. **State translation** from guest state to `IDirect3DDevice9` calls.
+
+### The hard part: shader translation
+
+D3D9 *calls* translate cleanly. Shaders do not.
+
+The title's shaders are Xenos bytecode — the image contains
+`Microsoft (R) Xbox 360 Shader Compiler 2.0.x` — and PC D3D9 requires DXBC.
+An intercepted draw therefore needs its shaders translated, either
+Xenos→DXBC or by shipping a DXBC recompile path.
+
+This is the dominant remaining graphics cost and should not be underestimated,
+but it is a well-scoped compiler problem rather than a hardware emulator, which
+is a materially better position than emulating a GPU command processor.
 
 ## Level A — display mode (implemented)
 
@@ -64,35 +115,27 @@ backbuffer handling are wired up.
 renderer then renders through our path. On its own it changes the numbers the
 game *asks for*; whether pixels reach the screen depends on level B.
 
-## Level B — command processor emulation (not implemented)
+## Level B — Xenos command processor emulation (**not required**)
 
-This is the actual blocker for showing anything. The Xbox 360 GPU is not a
-display controller; it is a general-purpose vector processor that the game
-drives by writing command packets into a push buffer over a register bus, and
-the results are read back through another bus. Drawing is therefore not a
-matter of calling `DrawIndexedPrimitive` — it is a matter of interpreting a
-packet stream and rasterising it.
+Documented for completeness, because it is the fallback if the NGL interception
+route turns out not to be reachable.
 
-The work is:
+The Xbox 360 GPU is not a display controller; it is a general-purpose vector
+processor driven by command packets pushed over a register bus. Emulating it
+would mean a register bus shim, a packet stream interpreter, and a rasteriser.
 
-1. **Register bus shim.** `MmMapIoSpace` is the guest's route to the GPU
-   registers. It is already implemented in `kernel_imports_core.cpp`, but it
-   currently hands back a zeroed scratch buffer and says so loudly. Every
-   register write the game makes lands there and is currently discarded.
-2. **Packet stream interpreter.** Parse the push buffer the game fills and
-   replay the commands (set render target, vertex buffer, texture, draw,
-   clear, state blocks).
-3. **Rasteriser.** Turn those into something that can be presented. The lowest
-   -fidelity but fastest-to-land option is translating packets into
-   desktop D3D9 calls; the highest-fidelity option is a software rasteriser
-   that reproduces Xenos behaviour including its tile-based deferred setup.
+**This is no longer the plan.** The port intercepts at level C instead, so the
+command processor is never reached. `MmMapIoSpace` remains implemented in
+`kernel_imports_core.cpp`; it hands back ordinary guest RAM and logs that
+hardware MMIO is not emulated, which is accurate and harmless on the level-C
+path.
 
-Nothing here is stubbed or faked in the current tree — the port renders nothing.
+## Level C — intercepting NGL (planned; this is the approach)
 
-## Level C — hooks inside NGL (planned)
+This is the level the port should target, and level B is **not** a prerequisite
+for it. Earlier revisions of this document said otherwise and were wrong.
 
-XenonRecomp has two facilities that make this possible once level B exists, and
-both are available today:
+XenonRecomp provides two facilities for it, both available today:
 
 **Function-level overrides.** PPC functions are emitted with a weak alias to an
 implementation stub:
@@ -106,8 +149,7 @@ PPC_FUNC(sub_821FB464)      // weak: replace with your own body
 ```
 
 Providing a strong definition of any recompiled function replaces it while the
-original stays reachable. This is how NGL's device creation, `nglPresent`, and
-render-target setup get intercepted.
+original stays reachable. This is how the NGL flush points get intercepted.
 
 **Mid-asm hooks.** The recompiler TOML can inject a call at a specific
 instruction address, passing selected registers:
@@ -119,8 +161,22 @@ address = 0x82E26244
 registers = ["r3"]
 ```
 
-This is the right tool for the options below, because it intercepts *values*
-(vp dimensions, projection extents) rather than replacing whole functions.
+This is the right tool for the value-level options below, because it intercepts
+*values* (vp dimensions, projection extents) rather than replacing whole
+functions.
+
+### Why the setters are deliberately not hooked
+
+The guest's D3D setters (`SetRenderState`, `SetTexture`, `SetVertexShader`, ...)
+only write shadow state. They emit no commands, and several are inlined into
+engine code where they could not be hooked anyway. Hooking them would be both
+fragile and pointless.
+
+Instead, hook the points where work is actually submitted — `Draw*`, `Clear`,
+`Resolve`, present/swap, and the constant-buffer and resource-registration entry
+points — and read the *full* current state out of the guest device at that
+moment. State set through unhooked setters is still correct, because it was
+written to the guest's own shadow state and is read back at submit time.
 
 ## Options that become available, and where each would attach
 
@@ -131,12 +187,23 @@ This is the right tool for the options below, because it intercepts *values*
 | **Higher FOV** | C | Override the horizontal FOV in the projection matrix construction |
 | **Anti-aliasing** | C | Override the multisample description at device creation |
 | **Shadow / texture quality** | C | Override quality-level lookups inside the asset system |
-| **Frame-rate cap / VSync** | C | Wrap `nglPresent` and pace submissions from the host thread |
+| **Frame-rate cap / VSync** | C | Wrap the present path and pace submissions from the host thread |
 
-None of these can be delivered before level B exists, because none of them can
-be observed without a working present path. The hooks are specified here so the
-work is not rediscovered later, but they are **not implemented**, and no code in
-this repository claims otherwise.
+None of these can be delivered before the title boots and a present path exists,
+because none can be observed otherwise. They are specified here so the work is
+not rediscovered, but they are **not implemented**, and no code in this
+repository claims otherwise.
+
+## Prerequisites, in order
+
+1. **The title must boot.** This is the current blocker and is independent of
+   graphics; see [STATUS.md](STATUS.md).
+2. **Identify the NGL method tables** and map entries to D3D9 semantics.
+3. **Build the state translation** to a real `IDirect3DDevice9`.
+4. **Solve shader translation** (Xenos bytecode → DXBC).
+
+Steps 2–4 are substantial but bounded. They are *not* the same project as
+emulating a GPU, and treating them as such would be a mistake.
 
 ## Deliberately not done
 

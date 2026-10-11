@@ -6,7 +6,7 @@ every claim is reproducible with the commands in [SETUP.md](SETUP.md).
 **Summary:** the static recompilation is complete and verified end to end. The
 binary launches, loads the real Xbox 360 executable, and executes recompiled
 PowerPC code. **It does not display the game.** The blocker is specific, is
-understood, and is documented below â€” it is not a toolchain problem.
+understood, and is documented below Ã¢â‚¬â€ it is not a toolchain problem.
 
 ---
 
@@ -17,7 +17,7 @@ understood, and is documented below â€” it is not a toolchain problem.
 | Dump analysis | **Done** | XEX/PE parsed, 179 imports resolved, 8 register helpers located ([ANALYSIS.md](ANALYSIS.md)) |
 | XenonRecomp toolchain built from source | **Done** | `XenonRecomp.exe`, `XenonAnalyse.exe` built with clang-cl 20.1.8 |
 | Jump table detection | **Done** | 323 tables detected |
-| XEX â†’ C++ translation | **Done** | 29,731 functions, 120 files, 98.4 MB, 3,109,564 lines, exit 0 |
+| XEX Ã¢â€ â€™ C++ translation | **Done** | 29,731 functions, 120 files, 98.4 MB, 3,109,564 lines, exit 0 |
 | Compiles to native x64 | **Done** | `build/host/COD3.exe`, 24.2 MB, links clean |
 | Guest memory model | **Done** | Image mapped at its real VA, indirect call table built, byte order correct |
 | Runs the title's boot path | **Done** | Reaches CRT main init (`sub_82349A98`) and its callees |
@@ -26,7 +26,7 @@ understood, and is documented below â€” it is not a toolchain problem.
 | Thread local storage | **Done** | `KeTlsAlloc`/`Get`/`Set`/`Free` with per-thread slots |
 | Xbox 360 kernel API layer | **Partial** | 37 hand-written, 142 generated stubs, 179 total |
 | Crash + call-chain attribution | **Done** | Faults map to guest addresses, and the host stack maps to a guest call chain |
-| CRT vtable dispatch | **In progress** | Current frontier â€” see below |
+| CRT vtable dispatch | **In progress** | Current frontier Ã¢â‚¬â€ see below |
 | **Renders the game** | **Not working** | See below |
 
 ## Boot path progress
@@ -57,7 +57,7 @@ from evidence rather than guesswork, and each is a prerequisite for the next.
                 + (uint32_t(guest) - PPC_CODE_BASE) * 2)
    ```
 
-   With `base == 0` that table occupies `0x82C30000`â€“`0x83626370`, about 10 MiB
+   With `base == 0` that table occupies `0x82C30000`Ã¢â‚¬â€œ`0x83626370`, about 10 MiB
    *outside* the image. Without it, every indirect call in the game faults. This
    is not a detail; it is on the hottest path in the entire port.
 
@@ -65,9 +65,9 @@ from evidence rather than guesswork, and each is a prerequisite for the next.
    caller's `BaseAddress` slot, not a pointer to a pointer. The extra
    dereference followed an unset slot into address 0.
 
-With those in place the port progresses through the CRT: loader globals â†’
-`RtlImageXexHeaderField` â†’ heap setup â†’ `NtAllocateVirtualMemory` (twice,
-distinct regions) â†’ `KeTlsAlloc` â†’ CRT main init.
+With those in place the port progresses through the CRT: loader globals Ã¢â€ â€™
+`RtlImageXexHeaderField` Ã¢â€ â€™ heap setup Ã¢â€ â€™ `NtAllocateVirtualMemory` (twice,
+distinct regions) Ã¢â€ â€™ `KeTlsAlloc` Ã¢â€ â€™ CRT main init.
 
 ### Verified run output
 ### Verified run output
@@ -104,7 +104,7 @@ stack (NGL, the Xenos D3D9 derivative) is statically linked into the 5 MB
 `XexGetProcedureAddress`.
 
 So there is no D3D9/D3D11 call to intercept, no wrapper to write, and no
-"modern renderer" to substitute. The Xbox 360 GPU is not a display controller â€”
+"modern renderer" to substitute. The Xbox 360 GPU is not a display controller Ã¢â‚¬â€
 it is a general-purpose vector processor driven by a command packet stream over
 a register bus, and that bus is currently discarded.
 
@@ -115,7 +115,7 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 â€” CRT vtable dispatch (current frontier)
+### Blocker 2 Ã¢â‚¬â€ CRT vtable dispatch (current frontier)
 
 The boot path now reaches the CRT's main init routine (`sub_82349A98`) and stops
 in a dispatch loop that walks a loader-populated structure:
@@ -177,18 +177,18 @@ Guest addresses below that boundary can never be made valid. This is a property
 of the host OS, not a runtime choice, and it is why the CRT's unset descriptor
 must be fixed at the source rather than masked in memory.
 
-### Blocker 3 â€” 14 unimplemented VMX instructions
+### Blocker 3 Ã¢â‚¬â€ 14 unimplemented VMX instructions
 
 The translator does not implement 33 distinct VMX/scalar opcodes. Because
 XenonRecomp emits each unimplemented opcode once as a helper, this collapses to
-**14 `__builtin_debugtrap()` sites** in the output â€” a tractable, well-defined
+**14 `__builtin_debugtrap()` sites** in the output Ã¢â‚¬â€ a tractable, well-defined
 task, but each one traps if reached. Full list in
-[ANALYSIS.md Â§8](ANALYSIS.md).
+[ANALYSIS.md Ã‚Â§8](ANALYSIS.md).
 
 The heavy hitters are `vslh` (874 hits), `vsrah` (541), `vsubshs` (522),
 `vspltish` (330), `vmaxsh` (231) and `vandc` (148).
 
-### Blocker 4 â€” ~700 jump table mis-detections
+### Blocker 4 Ã¢â‚¬â€ ~700 jump table mis-detections
 
 XenonRecomp reported errors such as:
 
@@ -214,7 +214,7 @@ Nothing in this repository pretends to work when it does not:
 * `ExCreateThread` / `KeCreateThread` spawn real Win32 threads, but guest
   thread stacks are allocated from the same pool as the game and are not
   wired to a scheduler; the Xbox 360 thread model is not modelled.
-* `ObReferenceObjectByHandle` succeeds and returns the handle back unchanged â€”
+* `ObReferenceObjectByHandle` succeeds and returns the handle back unchanged Ã¢â‚¬â€
   there is no object namespace, so handle validation does not happen.
 * `DbgPrint` logs the call but deliberately does **not** pass guest format
   strings to `printf`.
@@ -240,15 +240,21 @@ Nothing in this repository pretends to work when it does not:
    the next unimplemented API. Pool allocation, IRQL, sync objects, threads, TLS,
    virtual memory and XEX headers are done; XAM licensing, storage, input and
    networking are not.
-4. **Implement the Xenos command processor.** This is the long pole and the
-   reason no resolution scaling, FOV or AA option can be delivered yet. Once a
-   present path exists, the mid-asm hook mechanism documented in
-   [GRAPHICS.md](GRAPHICS.md) makes those options straightforward.
-5. **Fix the jump table detections** once the boot path is far enough in to hit
+4. **Intercept NGL and drive real D3D9.** This replaces an earlier assumption that
+   the Xenos command processor had to be emulated. It does not: the title calls
+   into the graphics stack through COM-style method tables (211 vtable-like tables
+   were measured in `.rdata`), above the point where anything becomes Xenos-
+   specific. Intercepting the flush points - `Draw*`, `Clear`, `Resolve`, present -
+   and translating the guest's state onto a real `IDirect3DDevice9` avoids the
+   command processor entirely. See [GRAPHICS.md](GRAPHICS.md).
+5. **Solve shader translation.** Xenos bytecode to DXBC. This is the dominant
+   remaining graphics cost, but it is a bounded compiler problem rather than a
+   hardware emulator.
+6. **Fix the jump table detections** once the boot path is far enough in to hit
    the affected regions.
 
-Items 1â€“3 are ordinary runtime engineering. Item 4 is a GPU emulator and is
-substantially larger than everything else combined.
+Items 1-3 are ordinary runtime engineering. Items 4-5 are substantial but
+bounded, and notably not a GPU emulator.
 
 ---
 

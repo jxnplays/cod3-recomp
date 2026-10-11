@@ -1,3 +1,5 @@
+
+---
 ![COD3 Recomp Logo](docs/logo.png)
 
 <div align="center">
@@ -19,7 +21,7 @@ supplies the runtime that the translated code links against: guest memory, the
 PowerPC dispatch table, and an implementation of the Xbox 360 kernel API
 surface the title imports.
 
-There is no emulation layer and no dynamic translation at run time — once
+There is no emulation layer and no dynamic translation at run time Ã¢â‚¬â€ once
 compiled, the game code is ordinary x86-64 that the OS runs natively.
 
 **Source dump** (read-only): `X:\AI\Recomp Projects\Call of Duty 3`
@@ -37,17 +39,21 @@ short:
 | XenonRecomp toolchain built from source | Done |
 | `default.xex` translated (29,731 functions, 98 MB of C++) | Done |
 | Compiled to a native `COD3.exe` | Done |
-| Host loads the guest image and enters the entry point | Done |
-| Xbox 360 kernel API layer (179 imports; 29 hand-written, 150 stubs) | Partial — see STATUS |
-| **Renders the game** | **Not yet — blocked on Xenos GPU command processor emulation** |
+| Guest memory model (image at real VA, byte order, indirect call table) | Done |
+| Xbox 360 kernel API layer (179 imports; 37 hand-written, 142 stubs) | Partial - see STATUS |
+| **Renders the game** | **Not yet** - title does not fully boot; graphics interception not started |
 
 The port loads the real recompiled executable and transfers control to its
-original entry point at `0x82344D00`. It does not yet draw. The reason is
-concrete and not a limitation of the recompiler: Call of Duty 3 imports **no
-D3D functions at all**, because the Xbox 360 graphics stack is statically linked
-into the executable, so there is no graphics API boundary to implement or wrap.
-See **[docs/GRAPHICS.md](docs/GRAPHICS.md)**.
+original entry point at `0x82344D00`, then runs the CRT through heap setup, XEX
+header queries, virtual memory and TLS. It stops in CRT initialisation.
 
+It does not yet draw, for two independent reasons: the title does not fully boot,
+and Call of Duty 3 imports **no D3D functions** because the Xbox 360 graphics
+stack (NGL) is statically linked into the executable. There is no *import*
+boundary, but there is a *vtable* boundary: 211 COM-style method tables were
+measured in `.rdata`. The plan is to intercept NGL's flush points and drive a real
+`IDirect3DDevice9` rather than emulating the Xenos command processor.
+See **[docs/GRAPHICS.md](docs/GRAPHICS.md)**.
 ---
 
 ## Quick start
@@ -101,7 +107,7 @@ Two design decisions worth calling out:
 **The runtime owns the XEX loading, via the recompiler's own parser.**
 `cod3_load_image()` calls `Xex2LoadImage()` from XenonUtils, the same code
 XenonRecomp used. That guarantees the bytes being executed are provably the
-bytes that were translated — no risk of the runtime and the translator
+bytes that were translated Ã¢â‚¬â€ no risk of the runtime and the translator
 disagreeing about decryption or import thunk patching.
 
 **The import stub table is generated, not hand-listed.** The set of required
@@ -117,7 +123,7 @@ This is a clean, standalone project.
 * No code, assets, configuration or patterns were taken from any prior
   recompilation project. The runtime, the analysis tooling and the graphics plan
   were written for this repository.
-* XenonRecomp is used strictly as a tool — the upstream CLI, built from its own
+* XenonRecomp is used strictly as a tool Ã¢â‚¬â€ the upstream CLI, built from its own
   source. Its `XenonUtils`/`ppc_context.h` supply the translation contract, not
   a game runtime; supplying the runtime is this project's job.
 * Only `hedge-dev/XenonRecomp` is used. Other recompilation projects surfaced
