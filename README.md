@@ -4,7 +4,7 @@
   <img src="docs/status.svg?v=1" width="900">
 </div>
 
-# cod3-recomp
+# COD3 Recomp
 
 Static recompilation of **Call of Duty 3** (Xbox 360) to a native Windows PC
 binary.
