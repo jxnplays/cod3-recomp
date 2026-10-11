@@ -495,3 +495,27 @@ COD3_COUNTED_WRAPPER(sub_82349D98, s49d98)
 COD3_COUNTED_WRAPPER(sub_82349BF0, s49bf0)
 COD3_COUNTED_WRAPPER(sub_82344B30, s44b30)
 COD3_COUNTED_WRAPPER(sub_82352998, s52998)
+
+// No override is installed for sub_823438C8 or sub_823438D8.
+//
+// An override was tried here and it made attribution worse rather than better:
+// adding a strong definition puts MY function at sub_823438C8's host address,
+// the compiler then inlines the original body and the diagnostics into it, and
+// the resulting code is large enough that a PC well past the original body's end
+// is still reported as sub_823438C8. The index dump added to the crash handler
+// shows the layout directly:
+//
+//   00007FF6906C7A10  sub_823438C8
+//   00007FF6906C7B10  sub_823438D8
+//   fault PC          00007FF6906C7A3F   (+47 from sub_823438C8)
+//
+// 0x100 = 256 is a byte offset that smells like [r13+256] with r13 == 0, which
+// is exactly what this three-instruction body does:
+//
+//   lwz r11,256(r13)
+//   lwz r3,332(r11)
+//
+// With r13 == 0 the first load reads [0x100] and faults there. So r13 is unset
+// at this point in boot, and the next thing to establish is who is supposed to
+// set it - r13 is the CRT's per-thread pointer, initialised on the thread-start
+// path. That is the thread to pull, not this function.

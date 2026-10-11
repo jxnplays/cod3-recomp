@@ -81,7 +81,30 @@ bool attribute_host_pc(const void* pc, uint32_t* guest, size_t* distance)
     --it;
     *guest = it->guest;
     *distance = static_cast<size_t>(target - it->host);
+
     return true;
+}
+
+// Dump the indexed neighbourhood around a PC. Useful whenever attribution looks
+// wrong: the index is built from PPCFuncMappings sorted by host address, and a
+// PC in a gap is attributed to the preceding start. Seeing the neighbouring host
+// addresses makes that visible instead of having to infer it from the symbol.
+void dump_index_neighbourhood(const void* pc, size_t count = 8)
+{
+    const auto& index = host_index();
+    const auto* target = static_cast<const char*>(pc);
+    auto it = std::lower_bound(
+        index.begin(), index.end(), target,
+        [](const IndexEntry& e, const char* key) { return e.host < key; });
+
+    std::fprintf(stderr, "  [cod3]   index around host %p:\n", pc);
+    for (auto n = (it > index.begin() ? it - 1 : it);
+         n < index.end() && n < it + static_cast<ptrdiff_t>(count); ++n)
+    {
+        std::fprintf(stderr, "  [cod3]     %p  sub_%08X  (%+td)\n",
+                     static_cast<const void*>(n->host), n->guest,
+                     static_cast<const char*>(target) - n->host);
+    }
 }
 
 const char* describe_exception(DWORD code)
@@ -200,6 +223,13 @@ void cod3_install_crash_handler()
                 std::fprintf(stderr,
                     "[cod3]   guest addr  : 0x%08X  (sub_%.8X, +%zu bytes)\n",
                     guest, guest, distance);
+
+                // If the reported offset is implausibly large for this symbol,
+                // say so rather than leaving a wrong name to be trusted. The
+                // index resolves a PC to the last function start at or below it,
+                // so a PC past a function's end is attributed to that function.
+                // See dump_index_neighbourhood() below.
+                dump_index_neighbourhood(rec->ExceptionAddress);
             }
             else
             {
