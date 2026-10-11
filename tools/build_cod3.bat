@@ -20,5 +20,14 @@ if errorlevel 1 (
   echo PATCH FAILED
   exit /b 1
 )
+REM Record which guest functions the recompiler left untranslated, so the crash
+REM handler does not report an offset measured from a 4-byte stub. Generated at
+REM build time rather than scanned at runtime: the runtime version read the same
+REM files and found none of them.
+python "%REPO%\tools\gen_stub_symbols.py" "%REPO%\build\ppc" "%REPO%\build\runtime\cod3_stub_symbols.h"
+if errorlevel 1 (
+  echo STUB SYMBOLS FAILED
+  exit /b 1
+)
 cmake --build "%REPO%\build\cod3" --config Release -j %COD3_JOBS%
 exit /b %ERRORLEVEL%

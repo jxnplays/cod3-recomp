@@ -89,6 +89,9 @@ add_library(recompiled_call_of_duty_3 STATIC
 target_include_directories(recompiled_call_of_duty_3
     PUBLIC
         "${COD3_PPC_DIR}"
+        # cod3_stub_symbols.h is generated here by tools/gen_stub_symbols.py,
+        # alongside kernel_imports_stubs.cpp.
+        "${COD3_RT_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
         # simde provides <x86/avx.h> and friends, which ppc_context.h includes;
         # it has to be PUBLIC because the host includes ppc_context.h too.

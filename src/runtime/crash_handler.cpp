@@ -59,6 +59,49 @@ const std::vector<IndexEntry>& host_index()
     return index;
 }
 
+// -----------------------------------------------------------------------------
+// Stub symbols
+// -----------------------------------------------------------------------------
+//
+// Generated at build time by tools/gen_stub_symbols.py.
+//
+// The index resolves a host PC to the last function start at or below it. That
+// is right for real code and wrong for stubs: XenonRecomp emits some functions
+// as a single `.long 0x0`, and the real function that follows one gets
+// attributed to the stub, with an offset measured from four bytes of padding.
+//
+// This was attempted as a runtime scan of the generated sources first. It found
+// the files, read them, and found zero stubs, while the identical algorithm run
+// offline found 9,660. Generating the answer during the build removes the whole
+// problem - no runtime file I/O, no path resolution, and no way for the answer to
+// differ between the build that produced the binary and the run that crashes.
+//
+// The count is printed by the generator rather than here, because a silent zero
+// is indistinguishable from a broken scan. That is precisely how the runtime
+// version failed without anyone noticing.
+
+#include "cod3_stub_symbols.h"
+
+bool guest_symbol_is_stub(uint32_t guest)
+{
+    // Sorted, so a binary search is correct. The generator emits them in order.
+    uint32_t lo = 0;
+    uint32_t hi = kCod3StubSymbolCount;
+
+    while (lo < hi)
+    {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        if (kCod3StubSymbols[mid] < guest)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    return lo < kCod3StubSymbolCount && kCod3StubSymbols[lo] == guest;
+}
+
+bool guest_symbol_is_stub(uint32_t guest);
+
 // Attribute a host code address to the guest function containing it.
 //
 // Returns false if the address falls outside every translated function, which
@@ -220,9 +263,16 @@ void cod3_install_crash_handler()
 
             if (attribute_host_pc(rec->ExceptionAddress, &guest, &distance))
             {
-                std::fprintf(stderr,
-                    "[cod3]   guest addr  : 0x%08X  (sub_%.8X, +%zu bytes)\n",
-                    guest, guest, distance);
+                if (guest_symbol_is_stub(guest))
+                    std::fprintf(stderr,
+                        "[cod3]   guest addr  : 0x%08X  (sub_%.8X is an "
+                        "UNRESOLVED STUB - the fault is in the function after "
+                        "it, and the offset would be measured from padding)\n",
+                        guest, guest);
+                else
+                    std::fprintf(stderr,
+                        "[cod3]   guest addr  : 0x%08X  (sub_%.8X, +%zu bytes)\n",
+                        guest, guest, distance);
 
                 // If the reported offset is implausibly large for this symbol,
                 // say so rather than leaving a wrong name to be trusted. The
@@ -387,9 +437,15 @@ void cod3_install_crash_handler()
             uint64_t distance = 0;
             if (attribute_host_pc(rec->ExceptionAddress, &guest, &distance))
             {
-                std::fprintf(stderr,
-                    "[cod3]   guest addr  : 0x%08X  (sub_%.8X, +%llu bytes)\n",
-                    guest, guest, static_cast<unsigned long long>(distance));
+                if (guest_symbol_is_stub(guest))
+                    std::fprintf(stderr,
+                        "[cod3]   guest addr  : 0x%08X  (sub_%.8X is an "
+                        "UNRESOLVED STUB - see above)\n",
+                        guest, guest);
+                else
+                    std::fprintf(stderr,
+                        "[cod3]   guest addr  : 0x%08X  (sub_%.8X, +%llu bytes)\n",
+                        guest, guest, static_cast<unsigned long long>(distance));
             }
             else
             {

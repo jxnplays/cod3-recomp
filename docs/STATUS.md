@@ -202,6 +202,58 @@ Every block reports a sane size and steps backwards by exactly that much.
 **Skips under `COD3_TOLERATE_HEAP_FAULT` are zero** — the first time the heap
 tolerance has had nothing to tolerate on this path.
 
+#### The heap is vtable-dispatched from 0x8208C600
+
+**This is the most structurally useful thing found so far**, and it came from a
+positive control rather than from reasoning.
+
+The unresolved-stub work produced a tool that scans the image for pointers to
+stub addresses. It found **none** — 9,660 stubs, zero references. A negative
+result is worthless on its own, so it was checked against addresses that are
+certainly referenced. The control passed: real function addresses were found at
+expected offsets. The negative is therefore real, and it is useful:
+
+**None of the 9,660 unresolved stubs is ever called.** They are dead weight, not
+holes in the port. An unresolved-branch count is *not* the explanation for any
+fault seen so far, which removes a whole category of hypothesis.
+
+The control addresses then turned out to be adjacent, which is what mattered:
+
+```
+0x8208C600  ->  0x82344A88   sub_82344A88
+0x8208C608  ->  0x82344B30   sub_82344B30
+...
+0x8208C708  ->  0x82345E48   sub_82345E48
+0x8208C710  ->  0x823460D8   sub_823460D8    <- the faulting walk
+0x8208C718  ->  0x823464E0   sub_823464E0    <- the "extend", probed earlier
+0x8208C720  ->  0x82346618   sub_82346618
+0x8208C738  ->  0x82346D98   sub_82346D98    <- heap init
+0x8208C748  ->  0x82347340   sub_82347340
+0x8208C758  ->  0x823478F0   sub_823478F0    <- the heap core
+0x8208C768  ->  0x823481D8   sub_823481D8    <- a guarded consumer
+```
+
+That is the Xbox 360 heap dispatch table. **Every function involved in the CRT
+heap fault is an entry in it**, called through a function pointer rather than
+directly. That reframes the whole investigation:
+
+- The faults are not "a function does the wrong thing" — they are
+  "a dispatched method received the wrong argument".
+- `sub_823460D8` and `sub_823464E0` are *adjacent entries*, so the walk and the
+  extend are two methods of the same object.
+- This is almost certainly what the `+1404/+1408/+1412/+1416` fields on the heap
+  descriptor are. `sub_824C2640` stores one value into all four, which is
+  exactly how a sub-interface is built: point four consecutive slots at four
+  consecutive table entries.
+
+**Not yet acted on.** The obvious next step is to stop installing a custom
+trampoline at `+1412` and instead point the descriptor's method slots at the
+correct four-entry slice of this table — the table already contains the real
+"extend" implementation (`sub_823464E0`), so a hand-written grow method may have
+been solving a problem the guest's own dispatch already solves. That is a
+concrete, testable change, and it follows from measurement rather than from a
+reading of the code.
+
 #### Two implementations built on inference, both reverted
 
 Worth recording because the failure mode is the project's most persistent one.
