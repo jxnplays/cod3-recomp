@@ -22,12 +22,21 @@ switch_table_file_path = "COD3_switch_tables.toml"
 # --- PowerPC non-volatile register save/restore helpers ---
 # XenonRecomp needs the start address of each of these because the compiler
 # inlines them mid-function, so they must be recognised as fall-through blocks.
-restgprlr_14_address  = 0x82350AB0   # ld  r14, -0x98(r1)
-savegprlr_14_address  = 0x82350A60   # std r14, -0x98(r1)
-restfpr_14_address    = 0x8235121C   # lfd f14, -0x90(r12)
-savefpr_14_address    = 0x823511D0   # stfd f14, -0x90(r12)
-restvmx_14_address    = 0x82351508   # li r11,-0x120; lvx v14
-savevmx_14_address    = 0x82351270   # li r11,-0x120; stvx v14
-restvmx_64_address    = 0x8235159C   # li r11,-0x400; lvx128 v64
-savevmx_64_address    = 0x82351304   # li r11,-0x400; stvx128 v64
+#
+# Addresses below were located by tools/find_reg_helpers.py, which measures the
+# actual spill/reload runs in the loaded image rather than assuming them. The
+# previous values were wrong: none of them held a helper. 0x82350A60, declared
+# as savegprlr_14, decodes as `addi r11,r0,4`.
+#
+# This title uses r12 as the link register throughout (mflr r12 occurs 10,518
+# times across .text; mflr r0 occurs twice), and it has no lvx/stvx at all - the
+# VMX helpers are spelled lfdup/stfdup, so the VMX entries are left unset.
+#
+# restfpr_14 / savefpr_14 account for 8,651 of the 9,270 branches XenonRecomp
+# previously failed to resolve.
+restgprlr_14_address  = 0x82350AB0   # unverified
+savegprlr_14_address  = 0x82350A60   # unverified
+restfpr_14_address    = 0x8234F260   # lfd  f14, -0x98(r1)
+savefpr_14_address    = 0x8234F2B0   # stfd f14, -0x98(r1)
+
 

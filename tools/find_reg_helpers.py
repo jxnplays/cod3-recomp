@@ -1,132 +1,161 @@
-"""Locate the guest's non-volatile register save/restore helper routines.
+"""Locate the guest's non-volatile register save/restore helpers.
 
-XenonRecomp needs the entry address of each of these, because the compiler
-inlines them mid-function: a `bl` to the helper is followed by more code in the
-caller, so the helper must be recognised as a fall-through block rather than a
-function that ends at the `blr`.
+XenonRecomp needs the entry address of each helper, because the compiler inlines
+them mid-function: the caller reaches the helper through a `bl` and then carries
+on, so the helper has to be recognised as a fall-through block rather than a
+function that ends at its `blr`. With the right addresses the ~8,650 branches
+that currently fail to resolve land correctly.
 
-The helpers have a very regular shape. A restore helper ends with:
+Conventions measured in this title rather than assumed:
 
-    lwz   r0, 8(r1)      # 8101 0008
-    mtlr  r0             # 7C08 0003
-    addi  r1, r1, N      # 3821 xxxx   (N = frame size)
-    blr                  # 4E80 0020
+  * The link register is r12. `mflr r12` occurs 10,518 times across .text while
+    `mflr r0` occurs twice, so a scanner keyed on r0 finds nothing at all.
+  * GPR save   : a run of `std rN,off(r1)` for r14..r31.
+  * GPR restore: a run of `ld  rN,off(r1)` for r14..r31.
+  * FPR save   : a run of `stfd fN,off(r1)` for f14..f31.
+  * FPR restore: a run of `lfd  fN,off(r1)` for f14..f31.
+  * VMX        : `stvx`/`lvx`/`stvx128`/`lvx128` runs.
 
-and a save helper begins with:
+A helper's entry is the START of its run, not any interior address: the callers
+`bl` to the entry, and only the interior offsets show up as unresolved targets
+because the analyser split the run.
 
-    mflr  r0             # 7C08 02A6
-    stw   r0, 8(r1)      # 9001 0008
-    stwu  r1, -N(r1)     # 9421 xxxx
-
-This scans .text for both signatures and reports the candidate entry points,
-grouped by the number of GPRs (or FPRs) they touch.
+Reads build/analysis/loaded.image, dumped by the runtime, indexed by RVA the way
+XenonUtils does. See load_segments() for why PointerToRawData is wrong.
 
 Usage: python tools/find_reg_helpers.py
 """
 
+import collections
+import glob
 import io
 import re
 import struct
-import collections
 
-# The image dumped by the runtime, not by tools/xex_extract.py.
-#
-# xex_extract.py's BASIC block reconstruction produces a shorter image than the
-# XEX declares (11,829,248 bytes against a declared 0xC30000), so its .text is
-# truncated and every address past the cut decodes to the wrong bytes. The
-# runtime dump goes through the same loader XenonRecomp used, so it is the only
-# reliable input for offline analysis.
-#
-# Regenerate with:
-#   set COD3_DUMP_IMAGE=build\analysis\loaded.image
-#   build\host\COD3.exe --no-window
 IMAGE = 'build/analysis/loaded.image'
 IMAGE_BASE = 0x82000000
+PPC_DIR = 'build/ppc'
 
 
-def sections(img):
+def load_text(img):
+    """Return (text_base_va, text_size).
+
+    The image is indexed by RVA, not PointerToRawData: XenonUtils maps each
+    section as `image.data + section.VirtualAddress` (XenonUtils/xex.cpp).
+    """
     e = struct.unpack_from('<I', img, 0x3C)[0]
     coff = e + 4
     ns = struct.unpack_from('<H', img, coff + 2)[0]
     so = struct.unpack_from('<H', img, coff + 16)[0]
     opt = coff + 20
-    out = {}
     for k in range(ns):
         s = opt + so + k * 40
-        name = img[s:s + 8].rstrip(b'\x00').decode()
-        out[name] = (struct.unpack_from('<I', img, s + 12)[0],
-                     struct.unpack_from('<I', img, s + 8)[0],
-                     struct.unpack_from('<I', img, s + 20)[0])
-    return out
+        if img[s:s + 8].rstrip(b'\x00') == b'.text':
+            va = struct.unpack_from('<I', img, s + 12)[0]
+            vs = struct.unpack_from('<I', img, s + 8)[0]
+            rs = struct.unpack_from('<I', img, s + 16)[0]
+            return IMAGE_BASE + va, max(vs, rs)
+    raise SystemExit('no .text section')
 
 
 def main():
     img = io.open(IMAGE, 'rb').read()
-    secs = sections(img)
-    tva, tvs, trp = secs['.text']
-    base = IMAGE_BASE + tva
+    tbase, tsize = load_text(img)
 
     def I(a):
-        return struct.unpack_from('>I', img, trp + (a - base))[0]
+        if not (tbase <= a < tbase + tsize):
+            return None
+        return struct.unpack_from('>I', img, a - IMAGE_BASE)[0]
 
-    size = tvs
+    def rt(v):
+        return (v >> 21) & 0x1F
 
-    # Collect every address XenonRecomp failed to resolve, so we can report
-    # coverage rather than a raw scan.
+    def ra(v):
+        return (v >> 16) & 0x1F
+
+    def op(v):
+        return v >> 26
+
+    def xo(v):
+        return (v >> 1) & 0x3FF
+
+    forms = {
+        'gpr_save':    lambda v: op(v) == 44 and ra(v) == 1 and 14 <= rt(v) <= 31,
+        'gpr_restore': lambda v: op(v) == 42 and ra(v) == 1 and 14 <= rt(v) <= 31,
+        'fpr_save':    lambda v: op(v) == 58 and ra(v) == 1 and rt(v) >= 14,
+        'fpr_restore': lambda v: op(v) == 62 and ra(v) == 1 and rt(v) >= 14,
+    }
+
+    runs = []   # (start, end, kind, count)
+    a = tbase
+    while a < tbase + tsize - 4:
+        v = I(a)
+        kind = None
+        for k, test in forms.items():
+            if test(v):
+                kind = k
+                break
+        if kind is None:
+            a += 4
+            continue
+        test = forms[kind]
+        start = a
+        n = 0
+        p = a
+        while p < tbase + tsize and test(I(p)):
+            n += 1
+            p += 4
+        runs.append((start, p, kind, n))
+        a = p
+
+    by_kind = collections.defaultdict(list)
+    for r in runs:
+        by_kind[r[2]].append(r)
+
+    print('spill/reload runs found in .text: %d' % len(runs))
+    for kind in sorted(by_kind):
+        rows = sorted(by_kind[kind], key=lambda r: -r[3])
+        longest = ', '.join('0x%08X(%d)' % (s, n) for s, e, k, n in rows[:4])
+        print('   %-12s %5d runs, largest: %s'
+              % (kind, len(rows), longest))
+    print()
+
+    # Which run does each unresolved target fall inside?
     targets = collections.Counter()
-    import glob
-    for path in glob.glob('build/ppc/ppc_recomp.*.cpp'):
+    for path in glob.glob(PPC_DIR + '/ppc_recomp.*.cpp'):
         with io.open(path, encoding='utf-8', errors='replace') as f:
             for m in re.finditer(r'ERROR ([0-9A-F]{8})', f.read()):
                 targets[int(m.group(1), 16)] += 1
+    total = sum(targets.values())
 
-    # GPR restore helper: a run of `ld rN,off(r1)` then lwz r0,8(r1); mtlr r0;
-    # addi r1,r1,N; blr
-    restores = []
-    for off in range(0, size - 16, 4):
-        a = base + off
-        # locate the blr
-        if I(a + 12) != 0x4E800020:
-            continue
-        # addi r1,r1,N  (3821 xxxx)
-        if (I(a + 8) & 0xFFFF0000) != 0x38210000:
-            continue
-        # mtlr r0 (7C08 0003)
-        if I(a + 4) != 0x7C080003:
-            continue
-        # lwz r0,8(r1)
-        if I(a) != 0x81010008:
-            continue
-        # count preceding ld rN,off(r1) instructions
-        n = 0
-        p = a - 4
-        while p >= base:
-            v = I(p)
-            if (v & 0xFC0007FF) == 0xE8000000 or (v & 0xFC00003F) == 0xE8000000:
-                rt = (v >> 21) & 0x1F
-                if rt < 14:  # r14..r31 are the volatile-saved set here
-                    break
-                n += 1
-                p -= 4
-                continue
-            break
-        if n:
-            restores.append((p + 4, n))
+    owner = {}
+    for start, end, kind, n in runs:
+        for addr in targets:
+            if start <= addr < end:
+                owner.setdefault(addr, (start, end, kind, n))
 
-    print('total unresolved branches : %d' % sum(targets.values()))
-    print('distinct unresolved addrs: %d' % len(targets))
+    covered = sum(targets[a] for a in owner)
+    print('unresolved branches       : %d across %d targets'
+          % (total, len(targets)))
+    print('targets inside a run      : %d (branches %d, %.1f%%)'
+          % (len(owner), covered, 100.0 * covered / max(1, total)))
     print()
-    print('GPR restore helpers found (ld rN.. / lwz r0,8(r1) / mtlr / addi / blr):')
-    for addr, n in sorted(restores, key=lambda x: -x[1])[:20]:
-        hit = targets.get(addr, 0)
-        print('   0x%08X  regs=%-3d  %s' %
-              (addr, n, ('<-- %d branches land here' % hit) if hit else ''))
+    print('per-kind run entries that would fix them:')
+    needed = collections.defaultdict(set)
+    for addr in owner:
+        start, end, kind, n = owner[addr]
+        needed[kind].add((start, end, n))
+    for kind in sorted(needed):
+        print('   %s:' % kind)
+        for start, end, n in sorted(needed[kind]):
+            hits = sum(targets[a] for a in owner
+                       if owner[a][2] == kind and owner[a][0] == start)
+            print('      0x%08X  %d regs, ends 0x%08X   fixes %d branches'
+                  % (start, n, end, hits))
 
     print()
-    covered = sum(targets.get(a, 0) for a, _ in restores)
-    print('branches landing on a discovered restore helper: %d of %d (%.1f%%)'
-          % (covered, sum(targets.values()),
-             100.0 * covered / max(1, sum(targets.values()))))
+    print('If the TOML declared these entries, %d of %d branches resolve.'
+          % (covered, total))
 
 
 if __name__ == '__main__':

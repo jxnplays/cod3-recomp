@@ -18,6 +18,14 @@ BLR = 0x4E800020
 
 
 def load_segments(img):
+    """Parse the PE section table.
+
+    IMPORTANT: the address of an instruction is its RVA, not its file offset.
+    XenonUtils maps each section as `image.data + section.VirtualAddress`
+    (XenonUtils/xex.cpp), so the guest byte for VA X lives at file offset X in
+    the loaded image. PointerToRawData is NOT how the image is indexed, and
+    using it decodes the wrong bytes for every address.
+    """
     e = struct.unpack_from('<I', img, 0x3C)[0]
     coff = e + 4
     ns = struct.unpack_from('<H', img, coff + 2)[0]
@@ -129,15 +137,18 @@ def decode(ins, pc):
 
 def main():
     start = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0x8234F2B0
-    end = int(sys.argv[2], 0) if len(sys.argv) > 2 else start + 0x60
+    end = int(sys.argv[2], 0) if len(sys.argv) > 2 else start + 4
+    if end <= start:
+        end = start + 4
 
     img = io.open(IMAGE, 'rb').read()
     segs = load_segments(img)
 
     def off_for(va):
+        # See load_segments(): the image is indexed by RVA.
         for name, sva, svs, srp, srs in segs:
             if sva <= va - IMAGE_BASE < sva + max(svs, srs):
-                return srp + (va - IMAGE_BASE - sva), name
+                return va - IMAGE_BASE, name
         return None, None
 
     a = start

@@ -587,11 +587,12 @@ bool cod3_load_image(const char* xex_path)
     if (mem == nullptr)
     {
         std::fprintf(stderr,
-            "[cod3] could not reserve 0x%zX bytes at the guest image base "
+            "[cod3] could not reserve 0x%llX bytes at the guest image base "
             "0x%08X (Win32 error %lu).\n"
             "[cod3] The image must be mapped at its real virtual address because "
             "the recompiled code forms references as base+guest_VA.\n",
-            reserve, imageBase, GetLastError());
+            static_cast<unsigned long long>(reserve),
+            static_cast<uint32_t>(imageBase), GetLastError());
         return false;
     }
 
@@ -836,7 +837,7 @@ bool cod3_load_image(const char* xex_path)
             std::fclose(f);
             std::fprintf(stderr,
                 "[cod3] dumped %zu of %zu image bytes to %s\n",
-                written, image.size, dump);
+                written, static_cast<size_t>(image.size), dump);
         }
         else
         {
