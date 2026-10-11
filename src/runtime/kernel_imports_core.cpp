@@ -60,6 +60,11 @@ static RtlNtStatusToDosError_fn get_ntstatus_to_dos_error()
 //
 // Xbox 360 pool tags are packed as four bytes; the game is fond of asserting on
 // them, so we keep the tag alongside each block for the shutdown report.
+//
+// The header below is HOST byte order, deliberately. It is runtime-private
+// metadata that the guest never reads: only the payload beyond it is
+// guest-visible, and the guest reaches that payload through the returned
+// pointer. Using guest (big-endian) byte order here would corrupt every block.
 
 struct PoolBlock
 {
@@ -516,7 +521,7 @@ PPC_FUNC(__imp__ExCreateThread)
 
     HANDLE h = create_guest_thread(startRoutine, startArg, stackSize, 1);
     if (outHandle != 0)
-        *reinterpret_cast<uint32_t*>(outHandle) = GUEST_HANDLE(h);
+        cod3_store_u32(outHandle, GUEST_HANDLE(h));
     ctx.r3.u64 = (h != nullptr) ? STATUS_SUCCESS : 0xC0000071;
 }
 
@@ -743,19 +748,20 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     // relies on for its page heap and TLS.
     std::memset(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), 0, size);
 
-    if (pBaseSlot != nullptr)
-        *pBaseSlot = addr;
-    if (pRegion != nullptr)
-        *pRegion = size;
+    // Write back through the byte-swapping helpers: the guest is big-endian and
+    // would otherwise read a byteswapped pointer.
+    cod3_store_u32(ctx.r3.u32, addr);
+    cod3_store_u32(ctx.r4.u32, size);
 
     // Verify the write-back is actually visible; this is the single most
     // important invariant of the whole runtime and worth asserting explicitly.
-    if (pBaseSlot != nullptr && *pBaseSlot != addr)
+    const uint32_t readBack = cod3_load_u32(ctx.r3.u32);
+    if (readBack != addr)
     {
         std::fprintf(stderr,
             "[cod3] NtAllocateVirtualMemory: WRITE-BACK FAILED at 0x%08X "
             "(read back 0x%08X)\n",
-            ctx.r3.u32, *pBaseSlot);
+            ctx.r3.u32, readBack);
     }
 
     // The VM logs its activity, which is useful while bringing the boot path up
@@ -820,19 +826,19 @@ PPC_FUNC(__imp__NtQueryVirtualMemory)
     //   2 = MemorySectionInformation
     // We answer every class with a basic descriptor, which is enough for the
     // CRT to continue; anything more specific would need the real region map.
+    //
+    // Written through the byte-swapping helpers: the guest reads these
+    // big-endian, and a native store would leave every field byteswapped.
     std::memset(pInfo, 0, 0x20);
-    pInfo[0] = regionBase;              // BaseAddress
-    pInfo[1] = regionBase;              // AllocationBase
-    pInfo[2] = regionSize;              // RegionSize
-    pInfo[3] = 0x1000;                  // State: MEM_COMMIT
-    pInfo[4] = 0x04;                    // Protect: PAGE_READWRITE
-    pInfo[5] = 0x02;                    // Type: MEM_PRIVATE
+    cod3_store_u32(ctx.r5.u32 + 0x00, regionBase); // BaseAddress
+    cod3_store_u32(ctx.r5.u32 + 0x04, regionBase); // AllocationBase
+    cod3_store_u32(ctx.r5.u32 + 0x08, regionSize); // RegionSize
+    cod3_store_u32(ctx.r5.u32 + 0x0C, 0x1000);     // State: MEM_COMMIT
+    cod3_store_u32(ctx.r5.u32 + 0x10, 0x04);       // Protect: PAGE_READWRITE
+    cod3_store_u32(ctx.r5.u32 + 0x14, 0x02);       // Type: MEM_PRIVATE
 
     // ReturnLength (r7) points at a ULONG to receive the size filled in.
-    auto* pLen = reinterpret_cast<uint32_t*>(
-        static_cast<uintptr_t>(ctx.r7.u32));
-    if (pLen != nullptr)
-        *pLen = 0x20;
+    cod3_store_u32(ctx.r7.u32, 0x20);
 
     (void)infoClass;
     SET_R3(ctx, STATUS_SUCCESS);
@@ -906,7 +912,7 @@ PPC_FUNC(__imp__MmGetPhysicalAddress)
     {
         // Xbox 360 physical addresses are 32-bit; the high bit of the
         // descriptor is the "no-cache"/device bit, which we leave clear.
-        *reinterpret_cast<uint32_t*>(out) = phys;
+        cod3_store_u32(out, phys);
     }
     ctx.r3.u64 = 0;
 }
@@ -974,6 +980,73 @@ PPC_FUNC(__imp__XexGetModuleHandle)
     SET_R3(ctx, 0); // no other module is loaded
 }
 
+// -----------------------------------------------------------------------------
+// XEX header fields
+// -----------------------------------------------------------------------------
+//
+// RtlImageXexHeaderField(handle, fieldId, &value)
+//
+// This is how the CRT discovers the memory layout it is entitled to: stack
+// size, heap size, page heap flags, TLS directory. It is the single most
+// important import during boot.
+//
+// Verified call site (build/ppc/ppc_recomp.55.cpp, sub_82349BF0):
+//
+//   lwz  r3,88(r11)              ; image handle
+//   lis  r4,2  ; ori r4,0x401    ; fieldId = 0x00020401
+//                                  XEX_HEADER_DEFAULT_HEAP_SIZE
+//   bl   RtlImageXexHeaderField
+//   cmplwi r3,0 ; beq <bail>     ; failure -> heap never set up
+//
+// Returning 0 here made the CRT skip heap initialisation entirely, which is what
+// left the heap descriptor holding a small value instead of a pointer.
+//
+// Several of these fields are absent from retail titles; the Xbox 360 kernel
+// substitutes defaults. Those defaults are reproduced below, because failing the
+// call is strictly worse than returning a plausible value.
+
+constexpr uint32_t XEX_HEADER_IMAGE_BASE_ADDRESS = 0x00010201;
+constexpr uint32_t XEX_HEADER_ENTRY_POINT         = 0x00010100;
+constexpr uint32_t XEX_HEADER_TLS_INFO            = 0x00020104;
+constexpr uint32_t XEX_HEADER_DEFAULT_STACK_SIZE  = 0x00020200;
+constexpr uint32_t XEX_HEADER_DEFAULT_HEAP_SIZE   = 0x00020401;
+constexpr uint32_t XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS = 0x00028002;
+
+// Verified call sites (build/ppc/ppc_recomp.55.cpp, sub_82349CC0):
+//
+//   lis  r4,2 ; ori r4,0x401    ; fieldId = 0x00020401 (DEFAULT_HEAP_SIZE)
+//   lwz  r3,88(r11)              ; image handle
+//   bl   RtlImageXexHeaderField
+//   cmplwi r3,0 ; beq <bail>     ; NULL return -> give up
+//   lwz  r30,0(r3)               ; read the FIRST DWORD of the returned data
+//   cmplwi r30,0 ; bne <bail>    ; nonzero -> give up
+//
+// So the return value in r3 is a POINTER to the header data, not a status, and
+// there is no out-parameter. Returning a status here made the caller bail out
+// of heap setup entirely, which is what produced the bad descriptor pointer.
+PPC_FUNC(__imp__RtlImageXexHeaderField)
+{
+    const uint32_t field = ctx.r4.u32;
+
+    uint32_t dataPtr = 0;
+    if (!cod3_xex_header_field(field, &dataPtr))
+    {
+        // Absent from this title. The kernel still answers with a pointer to a
+        // zeroed default, and the caller requires the first DWORD to be zero.
+        // Hand back a dedicated zeroed page so the caller can read it safely.
+        dataPtr = cod3_xex_default_field_slot(field);
+    }
+
+    if (vm_quiet)
+    {
+        std::fprintf(stderr,
+            "[cod3] RtlImageXexHeaderField(0x%08X) -> 0x%08X\n",
+            field, dataPtr);
+    }
+
+    SET_R3(ctx, dataPtr);
+}
+
 PPC_FUNC(__imp__XexGetProcedureAddress)
 {
     // (moduleHandle, ordinal, &address)
@@ -991,7 +1064,7 @@ PPC_FUNC(__imp__XexGetProcedureAddress)
     }
 
     if (outPtr != 0)
-        *reinterpret_cast<uint32_t*>(outPtr) = resolved;
+        cod3_store_u32(outPtr, resolved);
 
     // Returning 0 here means "not found"; the caller checks the out param.
     ctx.r3.u64 = 0;
@@ -1070,10 +1143,10 @@ PPC_FUNC(__imp__XGetVideoMode)
     const uint32_t width  = (ctx.r3.u32 != 0) ? ctx.r3.u32 : 0;
     uint32_t dw = 0, dh = 0, dr = 0, df = 0;
     cod3_host_display_mode(&dw, &dh, &dr, &df);
-    if (width)  *reinterpret_cast<uint32_t*>(ctx.r3.u32) = dw;
-    if (ctx.r4.u32) *reinterpret_cast<uint32_t*>(ctx.r4.u32) = dh;
-    if (ctx.r5.u32) *reinterpret_cast<uint32_t*>(ctx.r5.u32) = dr;
-    if (ctx.r6.u32) *reinterpret_cast<uint32_t*>(ctx.r6.u32) = df;
+    if (width) cod3_store_u32(ctx.r3.u32, dw);
+    if (ctx.r4.u32) cod3_store_u32(ctx.r4.u32, dh);
+    if (ctx.r5.u32) cod3_store_u32(ctx.r5.u32, dr);
+    if (ctx.r6.u32) cod3_store_u32(ctx.r6.u32, df);
     ctx.r3.u64 = 0;
 }
 
@@ -1090,10 +1163,10 @@ PPC_FUNC(__imp__VdGetCurrentDisplayInformation)
         // actually reads (width/height at the front).
         uint8_t* const p = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(out));
         std::memset(p, 0, 0x28);
-        *reinterpret_cast<uint32_t*>(p + 0x00) = dw;
-        *reinterpret_cast<uint32_t*>(p + 0x04) = dh;
-        *reinterpret_cast<uint32_t*>(p + 0x08) = 0;   // non-interlaced
-        *reinterpret_cast<uint32_t*>(p + 0x0C) = 0;
+        cod3_store_u32(out + 0x00, dw);
+        cod3_store_u32(out + 0x04, dh);
+        cod3_store_u32(out + 0x08, 0);   // non-interlaced
+        cod3_store_u32(out + 0x0C, 0);
     }
     ctx.r3.u64 = 0;
 }
@@ -1130,7 +1203,7 @@ PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
 {
     const uint32_t out = ctx.r3.u32;
     if (out != 0)
-        *reinterpret_cast<uint32_t*>(out) = 0x000A0000u; // gamma 1.0
+        cod3_store_u32(out, 0x000A0000u); // gamma 1.0
     ctx.r3.u64 = 0;
 }
 

@@ -50,6 +50,8 @@ HAND_IMPLEMENTED = {
     # module / export resolution (the game resolves most of D3D dynamically)
     "XexGetModuleHandle", "XexGetProcedureAddress", "XexGetXEntryInfo",
     "XexGetOptionalXEntryInfo", "XexGetTitleId",
+    # XEX header fields: the CRT cannot set up its heap without these
+    "RtlImageXexHeaderField",
     # misc
     "DbgPrint", "RtlNtStatusToDosError",
     "ExRegisterTitleTerminateNotification",

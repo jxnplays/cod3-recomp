@@ -47,6 +47,14 @@ extern uint32_t g_guest_heap_size;
 // The address the title is linked to load (XEX IMAGE_BASE_ADDRESS).
 extern uint32_t kGuestImageBase;
 
+// Guest call tracing.
+//
+// Enable with COD3_TRACE_GUEST=1 to record the guest addresses of recompiled
+// functions as they are entered, and dump the tail of that history when the
+// runtime faults. This is the cheapest way to see how far the boot path got.
+void cod3_set_guest_trace(bool enabled);
+void cod3_record_guest_call(uint32_t address);
+
 // -----------------------------------------------------------------------------
 // Import tracing
 // -----------------------------------------------------------------------------
@@ -90,6 +98,43 @@ extern uint32_t g_irql;
 // Pool allocator
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Guest memory access
+// -----------------------------------------------------------------------------
+//
+// THE GUEST IS BIG-ENDIAN. PowerPC on the Xbox 360 stores multi-byte values
+// most-significant byte first, and XenonRecomp's generated code byte-swaps every
+// load and store to compensate on a little-endian host.
+//
+// The runtime is NOT generated code, so it must do the same thing by hand.
+// Writing a uint32_t natively into guest memory and letting the guest read it
+// back silently yields the byteswapped value - 0x83CA0000 comes back as
+// 0x0000CA83 - which produces a wrong pointer far from the real cause.
+//
+// Always use these helpers for guest memory. They are deliberately the only
+// sanctioned way to touch it.
+
+// Store a 32-bit value in guest memory, byte-swapped as the guest expects.
+inline void cod3_store_u32(uint32_t address, uint32_t value)
+{
+    auto* p = reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(address));
+    p[0] = static_cast<uint8_t>(value >> 24);
+    p[1] = static_cast<uint8_t>(value >> 16);
+    p[2] = static_cast<uint8_t>(value >> 8);
+    p[3] = static_cast<uint8_t>(value);
+}
+
+// Load a 32-bit value from guest memory.
+inline uint32_t cod3_load_u32(uint32_t address)
+{
+    const auto* p = reinterpret_cast<const volatile uint8_t*>(
+        static_cast<uintptr_t>(address));
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+           static_cast<uint32_t>(p[3]);
+}
+
 // Xbox 360 pool allocations back the game's entire heap. These serve memory
 // from the guest heap region and return guest virtual addresses, because the
 // guest stores pointers in 32-bit registers and hands them back to us later.
@@ -122,6 +167,25 @@ uint32_t cod3_resolve_private_export(uint32_t ordinal);
 // pinned to the original console modes.
 void cod3_host_display_mode(uint32_t* width, uint32_t* height,
                             uint32_t* refreshHz, uint32_t* pixelFormat);
+
+// Look up one of the XEX optional header fields (XEX_HEADER_* ids) captured
+// from the container at load time.
+//
+// The CRT queries these through RtlImageXexHeaderField() during boot and gives
+// up if the call fails, so the runtime has to answer them. Returns false when
+// the field is genuinely absent from this title.
+bool cod3_xex_header_field(uint32_t field, uint32_t* outValue);
+
+// Publish the loader-populated globals in the title's .rdata that the CRT walks
+// during boot (the XEX loader context chain). Without these the title gives up
+// at the first instruction of heap setup.
+void cod3_populate_loader_globals();
+
+// Allocate (once per field) a zeroed guest page to stand in for an XEX header
+// field this title does not carry. The Xbox 360 kernel answers such queries with
+// a pointer to a default value rather than failing, and the CRT dereferences the
+// result unconditionally.
+uint32_t cod3_xex_default_field_slot(uint32_t field);
 
 // -----------------------------------------------------------------------------
 // Diagnostics

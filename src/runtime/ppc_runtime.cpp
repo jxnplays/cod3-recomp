@@ -59,6 +59,31 @@ void* g_low_scratch = nullptr;
 // cod3_load_image(); cod3_resolve_private_export() indexes into it by ordinal.
 static std::vector<uint32_t> g_exported_symbols;
 
+// The XEX optional header table, keyed by header field id.
+//
+// The CRT reads these through RtlImageXexHeaderField() during boot. If that
+// call fails, the title skips heap setup and later dereferences an unset
+// descriptor, so the table is captured from the container at load time.
+//
+// Values are resolved the way XenonUtils' getOptHeaderPtr() does:
+//   (field & 0xFF) == 0 -> the value is stored inline
+//   (field & 0xFF) == 1 -> the value is a pointer to a u32 in the header block
+//   otherwise           -> the value is an offset into the container
+static std::unordered_map<uint32_t, uint32_t> g_xex_header_fields;
+
+// Guest-relative copies of the header-block values, so a pointer field can be
+// returned to the guest as a readable guest address rather than a raw file
+// offset. The header block is copied into the scratch arena at load time.
+static std::unordered_map<uint32_t, uint32_t> g_xex_header_pointers;
+
+uint32_t be32_at(const uint8_t* data, size_t offset)
+{
+    return (static_cast<uint32_t>(data[offset]) << 24) |
+           (static_cast<uint32_t>(data[offset + 1]) << 16) |
+           (static_cast<uint32_t>(data[offset + 2]) << 8) |
+           static_cast<uint32_t>(data[offset + 3]);
+}
+
 // -----------------------------------------------------------------------------
 // Image loading
 // -----------------------------------------------------------------------------
@@ -295,6 +320,76 @@ bool cod3_load_image(const char* xex_path)
     }
     std::sort(g_exported_symbols.begin(), g_exported_symbols.end());
 
+    // Capture the XEX optional header table from the container.
+    //
+    // The whole container header region is copied into guest memory so that
+    // pointer-valued header fields (TLS info, heap sizes, ...) can be handed
+    // back to the guest as real readable guest addresses.
+    g_xex_header_fields.clear();
+    g_xex_header_pointers.clear();
+
+    const uint8_t* xex = g_image_storage.data();
+    const size_t xexSize = g_image_storage.size();
+
+    if (xexSize >= 0x18)
+    {
+        const uint32_t headerCount = be32_at(xex, 0x14);
+
+        // Copy the header block into the guest arena so pointer fields resolve.
+        uint32_t headerGuestBase = 0;
+        if (g_heap_ptr != nullptr)
+        {
+            headerGuestBase = g_guest_heap_base;
+            std::memcpy(reinterpret_cast<void*>(
+                            static_cast<uintptr_t>(headerGuestBase)),
+                        xex, xexSize < 0x40000 ? xexSize : 0x40000);
+        }
+
+        for (uint32_t i = 0; i < headerCount; ++i)
+        {
+            const size_t entry = 0x18 + static_cast<size_t>(i) * 8;
+            if (entry + 8 > xexSize)
+                break;
+
+            const uint32_t field = be32_at(xex, entry);
+            const uint32_t raw = be32_at(xex, entry + 4);
+            const uint32_t kind = field & 0xFFu;
+
+            uint32_t value;
+            if (kind == 0x00)
+            {
+                // Value stored inline in the header entry.
+                value = raw;
+            }
+            else if (kind == 0x01)
+            {
+                // Pointer to a big-endian u32 stored right after the entry.
+                const size_t valueOff = entry + 4;
+                if (valueOff + 4 > xexSize)
+                    continue;
+                value = (headerGuestBase != 0)
+                            ? (headerGuestBase + static_cast<uint32_t>(valueOff))
+                            : be32_at(xex, valueOff);
+            }
+            else
+            {
+                // Offset into the container.
+                value = (headerGuestBase != 0)
+                            ? (headerGuestBase + raw)
+                            : raw;
+            }
+
+            g_xex_header_fields[field] = value;
+        }
+    }
+
+    std::fprintf(stderr,
+        "[cod3] captured %zu XEX optional headers for the title to query\n",
+        g_xex_header_fields.size());
+
+    // Publish the loader-populated globals the CRT walks during boot.
+    cod3_populate_loader_globals();
+
     std::fprintf(stderr,
         "[cod3] loaded guest image at 0x%08X (base=0), image 0x%08X bytes, "
         "entry 0x%08X, %zu exported symbols\n",
@@ -390,7 +485,183 @@ void cod3_run_guest_function(uint32_t address, PPCContext& ctx)
 
     // base is null because the guest image is mapped at its real virtual
     // address; the callee forms every reference as base + guest_va.
+    cod3_record_guest_call(address);
     r.fn(ctx, g_base);
+}
+
+// -----------------------------------------------------------------------------
+// Loader-populated globals
+// -----------------------------------------------------------------------------
+//
+// Before the entry point runs, the Xbox 360 kernel populates a block of globals
+// in the title's .rdata describing the loaded XEX. The CRT walks this chain
+// during boot (verified in sub_82349CC0):
+//
+//   [0x82001288] -> A
+//   [A + 0x00]   -> B
+//   [B + 0x58]   -> image handle
+//   RtlImageXexHeaderField(handle, 0x20401) -> pointer;  [pointer] must be 0
+//
+// On hardware every step is populated by the loader, so all of it reads as zero
+// in the raw XEX and the CRT bails out immediately on `cmplwi r11,0`. Building
+// the chain here is what lets the boot path continue.
+//
+// The offsets are recovered from the guest's own code, not guessed.
+
+constexpr uint32_t kLoaderGlobalsSlot = 0x82001288;
+
+void cod3_populate_loader_globals()
+{
+    // g_base is intentionally null (the image is mapped at its real address),
+    // so readiness is judged on the guest layout, not on g_base.
+    if (g_guest_heap_base == 0 || kGuestImageBase == 0)
+        return;
+
+    auto* heap = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(g_guest_heap_base));
+
+    // Two 4 KiB pages for the descriptor chain, taken from the front of the
+    // heap arena. The VM bump allocator starts above this region.
+    auto* structA = heap;              // pointed at by [0x82001288]
+    auto* structB = heap + 0x1000;     // pointed at by [A + 0]
+
+    std::memset(structA, 0, 0x1000);
+    std::memset(structB, 0, 0x1000);
+
+    // Guest memory is big-endian, so every value written here goes through the
+    // byte-swapping helpers. Writing natively yields 0x0000CA83 where the guest
+    // expects 0x83CA0000, and the CRT then dereferences nonsense.
+
+    // [A + 0] -> B
+    cod3_store_u32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structA)),
+                   static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structB)));
+
+    // [B + 0x58] holds the "image handle" the CRT passes to
+    // RtlImageXexHeaderField. The runtime does not use the handle for
+    // validation, but it must be a plausible non-zero value.
+    cod3_store_u32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structB) + 0x58),
+                   kGuestImageBase);
+
+    // The kernel also publishes the entry point and image size here; the CRT
+    // and the debug layer both read them.
+    cod3_store_u32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structB) + 0x10),
+                   g_guest_entry_point);
+    cod3_store_u32(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structB) + 0x14),
+                   kGuestImageBase);
+
+    // Publish the chain. g_base is null, so the guest address is the host address.
+    const uintptr_t slotHost = kLoaderGlobalsSlot;
+    const uintptr_t imageEnd = kGuestImageBase + 0xC98000;
+    if (slotHost + 4 > imageEnd)
+    {
+        std::fprintf(stderr,
+            "[cod3] loader globals slot 0x%08X is outside the mapped image "
+            "(ends 0x%08X); the CRT will bail out during boot.\n",
+            kLoaderGlobalsSlot, imageEnd);
+        return;
+    }
+
+    cod3_store_u32(kLoaderGlobalsSlot,
+                   static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structA)));
+
+    // Read it back through the same helpers to prove the round trip is correct.
+    // A mismatch here means every other guest write in the runtime is wrong too.
+    const uint32_t verify = cod3_load_u32(kLoaderGlobalsSlot);
+    const uint32_t expectA = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structA));
+    if (verify != expectA)
+    {
+        std::fprintf(stderr,
+            "[cod3] FATAL: loader globals round trip failed: wrote 0x%08X, "
+            "read 0x%08X. Guest memory byte order handling is wrong.\n",
+            expectA, verify);
+    }
+
+    std::fprintf(stderr,
+        "[cod3] loader globals published: [0x%08X] -> 0x%08X -> 0x%08X, "
+        "image handle 0x%08X\n",
+        kLoaderGlobalsSlot,
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structA)),
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(structB)),
+        kGuestImageBase);
+}
+
+// Look up an XEX optional header field captured from the container.
+//
+// `field` is one of the XEX_HEADER_* ids (Xex2HeaderKeys in XenonUtils/xex.h).
+// The returned value is a POINTER to the field's data, matching what
+// RtlImageXexHeaderField hands the guest.
+bool cod3_xex_header_field(uint32_t field, uint32_t* outValue)
+{
+    auto it = g_xex_header_fields.find(field);
+    if (it == g_xex_header_fields.end())
+        return false;
+    if (outValue != nullptr)
+        *outValue = it->second;
+    return true;
+}
+
+// A small pool of zeroed guest pages used to answer header fields that this
+// title does not carry.
+//
+// The Xbox 360 kernel returns a pointer to a default value rather than failing,
+// and the CRT dereferences the result unconditionally. Returning a real,
+// readable zeroed page lets that code run correctly for the fields retail COD3
+// omits (notably XEX_HEADER_DEFAULT_HEAP_SIZE).
+uint32_t cod3_xex_default_field_slot(uint32_t field)
+{
+    static std::unordered_map<uint32_t, uint32_t> slots;
+    static uint32_t nextFree = 0;
+
+    auto it = slots.find(field);
+    if (it != slots.end())
+        return it->second;
+
+    // Carve a page from the tail of the guest heap arena.
+    const uint32_t pageSize = 0x1000;
+    const uint32_t heapEnd = g_guest_heap_base + g_guest_heap_size;
+
+    if (nextFree == 0)
+        nextFree = g_guest_heap_base + 0x1000000; // past the live VM region
+
+    // Keep well clear of both ends of the arena.
+    if (static_cast<uint32_t>(nextFree + pageSize) >= heapEnd ||
+        nextFree < g_guest_heap_base + 0x800000)
+    {
+        nextFree = g_guest_heap_base + 0x800000;
+    }
+
+    const uint32_t slot = nextFree;
+    nextFree += pageSize;
+
+    std::memset(reinterpret_cast<void*>(static_cast<uintptr_t>(slot)), 0, pageSize);
+    slots.emplace(field, slot);
+    return slot;
+}
+
+// Guest call depth tracker.
+//
+// Tracing every recompiled function call is not possible without instrumenting
+// the generated code, but the boot path makes only a bounded number of kernel
+// calls before it either succeeds or faults, so recording the last N guest
+// function entries is enough to see where execution got to.
+static std::vector<uint32_t> g_guest_trace;
+static bool g_guest_trace_enabled = false;
+
+void cod3_set_guest_trace(bool enabled)
+{
+    g_guest_trace_enabled = enabled;
+    if (enabled)
+        g_guest_trace.reserve(4096);
+    else
+        g_guest_trace.clear();
+}
+
+void cod3_record_guest_call(uint32_t address)
+{
+    if (!g_guest_trace_enabled)
+        return;
+    if (g_guest_trace.size() >= 4000)
+        return; // stop growing rather than corrupting memory
+    g_guest_trace.push_back(address);
 }
 
 // -----------------------------------------------------------------------------

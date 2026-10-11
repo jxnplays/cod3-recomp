@@ -99,6 +99,49 @@ const char* describe_exception(DWORD code)
     }
 }
 
+// Walk the host call stack and map each frame back to the guest function it
+// belongs to.
+//
+// This works because recompiled guest functions are ordinary C++ functions that
+// call each other directly, so the host return addresses on the stack are
+// exactly the frames of the guest call chain. It is the only practical way to
+// recover "how did we get here" without a source-level debugger.
+void print_guest_call_stack()
+{
+    constexpr int kMaxFrames = 96;
+    void* frames[kMaxFrames] = {};
+
+    const USHORT captured =
+        RtlCaptureStackBackTrace(0, kMaxFrames, frames, nullptr);
+
+    std::fprintf(stderr, "\n[cod3] guest call stack (%u frame(s)):\n",
+                 static_cast<unsigned>(captured));
+
+    int printed = 0;
+    for (USHORT i = 0; i < captured; ++i)
+    {
+        uint32_t guest = 0;
+        size_t distance = 0;
+        if (!attribute_host_pc(frames[i], &guest, &distance))
+            continue;
+
+        std::fprintf(stderr, "    #%-2d sub_%.8X  (host %p, +%zu)\n",
+                     printed++, guest, frames[i], distance);
+        if (printed >= 40)
+        {
+            std::fprintf(stderr, "    ... (truncated)\n");
+            break;
+        }
+    }
+
+    if (printed == 0)
+    {
+        std::fprintf(stderr,
+            "    (no frames fell inside a translated function; the fault is "
+            "in the runtime itself)\n");
+    }
+}
+
 } // namespace
 
 void cod3_install_crash_handler()
@@ -187,6 +230,7 @@ void cod3_install_crash_handler()
             kGuestImageBase, g_guest_heap_base,
             g_guest_entry_point, cod3_pool_live_allocations());
 
+        print_guest_call_stack();
         cod3_dump_import_trace();
         std::fflush(stderr);
         return EXCEPTION_EXECUTE_HANDLER;
