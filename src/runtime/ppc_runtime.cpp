@@ -227,6 +227,50 @@ void HeapListSeedGate(PPCRegister& r3, PPCRegister& r4)
 
 static void (*g_heap_slot_dumper)() = nullptr;
 
+// The faulting load, `lwz r1,0(r1)`, immediately after
+// RtlLeaveCriticalSection. The crash is reported at address 0x48, which is a
+// small offset rather than a guest address, so r1 is holding something derived
+// from a bad pointer when this runs.
+//
+// Wired up by the HeapListPopFault entry in config/recomp/COD3.toml.
+void HeapListPopFault(PPCRegister& r1, PPCRegister& r3)
+{
+    static int printed = 0;
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || printed >= 8)
+        return;
+    ++printed;
+
+    std::fprintf(stderr,
+        "[heap-fault] r1=0x%08X (pop target [0x%08X]=0x%08X)  r3=0x%08X\n",
+        r1.u32, r1.u32, cod3_load_u32(r1.u32), r3.u32);
+}
+
+// sub_82357E18, which the call stack mislabels as sub_82357D08 because it sits
+// immediately after it in .text.
+//
+//   0x82357E10  addi  r30,r11,28944    ; r30 = 0x825C7110
+//   0x82357E28  lwz   r3,80(r30)       ; list element at 0x825C7190
+//   0x82357E2C  bl    0x8257836C       ; a kernel import thunk
+//   0x82357E30  lwz   r1,0(r1)         ; pop the stack
+//
+// This is the frame that repeats, so its inputs say what the loop is waiting
+// on.
+//
+// Wired up by the HeapListPop entry in config/recomp/COD3.toml.
+void HeapListPop(PPCRegister& r30, PPCRegister& r31)
+{
+    static int calls = 0;
+    ++calls;
+
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || calls > 12)
+        return;
+
+    const uint32_t at = r30.u32 + 80;
+    std::fprintf(stderr,
+        "[heap-pop] #%d [0x%08X]=0x%08X r31=0x%08X\n",
+        calls, at, cod3_load_u32(at), r31.u32);
+}
+
 // The recursive call in sub_82357D08.
 //
 //   0x82357D90  bl   sub_82357E48

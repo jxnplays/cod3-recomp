@@ -113,6 +113,33 @@ name = "HeapNodeRecurse"
 address = 0x82357D90
 registers = ["r29", "r30"]
 
+# The functions that actually repeat. The call stack folds these into
+# sub_82357D08 because they sit immediately after it, but they are separate
+# entries in the mapping:
+#
+#   0x82357E18  lwz   r3,80(r30)     ; r30 = 0x825C7110 -> 0x825C7190
+#   0x82357E2C  bl    0x8257836C     ; a kernel import thunk
+#   0x82357E30  lwz   r1,0(r1)
+#
+# Every hook placed inside sub_82357D08 stays silent while these frames repeat,
+# so the cycle runs through here rather than through that function's body.
+[[midasm_hook]]
+name = "HeapListPop"
+address = 0x82357E28
+registers = ["r30", "r31"]
+
+# The faulting instruction itself. The crash is reported at sub_82357D08 +299,
+# which is 0x82357E33 - inside sub_82357E18's body but attributed to D08 because
+# the reporter folds contiguous functions together. Watching the store that
+# faults, and the import call just before it, settles which is executing.
+#
+#   0x82357E2C  bl    RtlLeaveCriticalSection
+#   0x82357E30  lwz   r1,0(r1)         ; <- faults, address 0x48
+[[midasm_hook]]
+name = "HeapListPopFault"
+address = 0x82357E30
+registers = ["r1", "r3"]
+
 # The actual exit test for the recursion, and the instruction immediately after
 # the recursive call returns:
 #
@@ -143,6 +170,9 @@ registers = ["r30", "r31"]
 name = "HeapListSeedStore"
 address = 0x82357DD8
 registers = ["r28", "r29", "r30"]
+
+
+
 
 
 
