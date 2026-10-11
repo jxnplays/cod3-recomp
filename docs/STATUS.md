@@ -115,20 +115,52 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 - heap-core carve faults on a null pointer (current frontier)
+### Blocker 2 - heap new-page path returns an uninitialised block (current frontier)
 
 Boot reaches thread creation. It now issues `NtCreateEvent`, `NtCreateMutant`,
 `NtWaitForSingleObjectEx`, `NtReleaseMutant`, `NtResumeThread` and
-`KeSetAffinityThread`, none of which it reached before.
+`KeSetAffinityThread`, none of which it reached before. The CRT free-list seeder
+`sub_82357BF0` also runs now, where before it never did.
 
 ```
-guest addr : 0x823460D8  (sub_823460D8, +1088 bytes)
+guest addr : 0x823460D8  (sub_823460D8)
 fault addr : 0x0
-guest regs : r3=0x846A8000 r4=0x9C5B4000 r11=0x00000000
 ```
 
-Still inside the heap-core carve (`sub_823478F0` → `sub_82346D98` →
-`sub_823460D8`), reached from `MmAllocatePhysicalMemoryEx` via `sub_82345AB0`.
+```asm
+sub_823460D8:
+  lwz  r11,12(r31)     ; r11 = 0  <- the block header's +12 field
+  lwz  r8,0(r11)       ; dereferences null: fault address 0x0
+```
+
+`r31` is a heap block header. Its `+12` field is zero.
+
+**What produced it**, measured rather than inferred:
+
+`sub_82346D98` calls `sub_82345E48`, which returns a block, and passes it
+straight to `sub_823460D8`. An entry override recorded what it returned:
+
+```
+sub_82345E48 #1 -> 0x9C5B4000  (heap r4=0x84686B98, key r5=0x60001000)
+```
+
+And `0x9C5B4000` is precisely what `NtAllocateVirtualMemory` had just handed out
+one page for:
+
+```
+NtAllocateVirtualMemory: flags=0x60001000 size=0x1000 -> 0x9C5B4000
+```
+
+So the guest is treating a **freshly allocated page as a heap block header**.
+Nothing ever wrote a header there, so `+12` reads as zero.
+
+That points at `sub_82345E48`: it walks a free list looking for a fit, and when
+it finds none it allocates a new page. Either the free list is empty, or the
+new-page path returns raw memory without building a header. `sub_82345E48` has
+three separate `li r3,0` returns, so a zero result is a real outcome — but here
+it returned non-zero, and that non-zero is the defect.
+
+**Not yet fixed.** Recorded so the next step starts from the measurement.
 
 #### What was fixed to get here
 
