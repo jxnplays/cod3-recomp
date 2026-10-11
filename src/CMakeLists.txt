@@ -80,6 +80,7 @@ add_library(recompiled_call_of_duty_3 STATIC
     runtime/crt_thread_block.cpp
     runtime/guest_entry_counters.cpp
     runtime/heap_fault_tolerance.cpp
+    runtime/heap_grow_method.cpp
     runtime/kernel_imports_core.cpp
     runtime/mm_physical.cpp
     runtime/ppc_runtime.cpp

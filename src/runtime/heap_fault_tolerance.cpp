@@ -209,16 +209,13 @@ void cod3_report_heap_tolerance()
 // sub_823481D0 and sub_823481D8 - the other consumers of the block list
 // -----------------------------------------------------------------------------
 //
-// With sub_823460D8 survivable, boot advanced to sub_823481D8 +1057 on address
-// 0x5. That is the next function in the same family: the crash-site scan found
-// both of these call sub_823460D8 at lr=0x823482A0, so they walk the same block
-// list and fault the same way.
+// These walk the same list as sub_823460D8 and fault the same way when a region
+// header does not describe the region it belongs to.
 //
-// Rather than patch each one as it appears, they are guarded on the same
-// condition: a region whose header does not describe a region cannot be walked,
-// so do not walk it. The identical shape is used so that the rule is stated once
-// and applied uniformly - a per-function rule invites the same reasoning error
-// twice.
+// They were removed once on the assumption that installing the grow method fixed
+// them. It does not: that fixes the ALLOCATOR, not the region headers. Boot went
+// from sub_823460D8 +72 straight back to sub_823481D8 +1057 with the guards
+// gone. Restored, with the distinction recorded so it is not re-derived.
 extern "C" void __imp__sub_823481D0(PPCContext& __restrict ctx, uint8_t* base);
 
 PPC_FUNC(sub_823481D0)
@@ -249,55 +246,4 @@ PPC_FUNC(sub_823481D8)
     }
 
     __imp__sub_823481D8(ctx, base);
-}
-
-// -----------------------------------------------------------------------------
-// The allocator entry points
-// -----------------------------------------------------------------------------
-//
-// The consumer guards turned a hard stop into real progress: boot went from
-// dying at the first heap call to reaching XamGetSystemVersion,
-// NetDll_WSAStartup, XamUserReadProfileSettings, NtCreateMutant, NtCreateEvent,
-// NtWaitForSingleObjectEx and NtReleaseMutant.
-//
-// It then returned to sub_823460D8 at a different offset. Rather than guard each
-// consumer as it appears, the entry points are guarded here. That is the general
-// form: every caller in this family already tests the allocator's return value
-// for null, whereas a fault inside a consumer is not something callers are
-// written to survive.
-//
-// The cost is stated plainly. Returning null makes allocations fail that would
-// otherwise have succeeded, so anything downstream may misbehave in ways that
-// are not the fault this works around. The skip count is printed at the end so
-// the number of affected allocations is never hidden.
-extern "C" void __imp__sub_82345E48(PPCContext& __restrict ctx, uint8_t* base);
-
-PPC_FUNC(sub_82345E48)
-{
-    PPC_FUNC_PROLOGUE();
-
-    // Only the path that fabricates a block out of raw memory is intercepted.
-    // That is the one that returns a page with no header, and it is reached only
-    // when the descriptor's grow method is unset. Everything else - satisfying
-    // the request from the free list - is left alone, because it is correct.
-    const uint32_t heap = ctx.r4.u32;
-    const bool inHeap = heap >= g_guest_heap_base &&
-                        heap < g_guest_heap_base + g_guest_heap_size;
-
-    if (tolerate() && inHeap && cod3_load_u32(heap + 1412) == 0)
-    {
-        if (++skips <= 16 || (skips % 1000) == 0)
-        {
-            std::fprintf(stderr,
-                "[cod3] heap: allocator 0x%08X has no grow method (+1412 = 0);"
-                " refusing to return raw memory as a block (skip #%llu)\n",
-                heap, skips);
-            std::fflush(stderr);
-        }
-
-        ctx.r3.u64 = 0;
-        return;
-    }
-
-    __imp__sub_82345E48(ctx, base);
 }

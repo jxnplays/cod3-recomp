@@ -217,6 +217,14 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
         __builtin_memset(mem, 0, pageAligned);
     }
 
+    // Report the address range of every reservation unconditionally. A later
+    // fault inside one of these ranges can then be attributed to a specific
+    // reservation rather than inferred, and a fault just outside one is as
+    // informative as one inside.
+    std::fprintf(stderr,
+        "[cod3] MmAlloc reserve: 0x%08X..0x%08X (%u bytes)\n",
+        result, result + pageAligned, pageAligned);
+
     if (!cod3_vm_quiet())
     {
         std::fprintf(stderr,

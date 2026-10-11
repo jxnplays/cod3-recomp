@@ -290,6 +290,12 @@ uint32_t* g_vm_brk_slot();
 // unit initialisation order to get wrong.
 bool cod3_vm_quiet();
 
+// The CRT heap grow method, callable by the guest through `bctrl`.
+// See src/runtime/heap_grow_method.cpp for why the loader owns it.
+void cod3_heap_grow(PPCContext& ctx, uint8_t* base);
+uint32_t cod3_heap_grow_service_address();
+void cod3_install_heap_grow_method(uint32_t heap);
+
 // Print how many CRT heap allocations were skipped by the fault tolerance. Safe
 // to call from a crash reporter.
 void cod3_report_heap_tolerance();

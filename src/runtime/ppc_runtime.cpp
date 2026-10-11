@@ -605,10 +605,21 @@ enum RuntimeService
     // The CRT calls this through [0x825F6E38] straight after the dispatcher and
     // requires a non-zero result, so it must report success.
     RuntimeService_HeapMethod = 1,
+    // The CRT heap grow method. See src/runtime/heap_grow_method.cpp: the
+    // loader owns this because no guest function installs it.
+    RuntimeService_HeapGrow = 2,
     RuntimeService_Count,
 };
 
 static uint32_t g_runtime_service_base = 0; // guest address of slot 0
+
+// The guest-callable address of the CRT heap grow method, or 0 before the
+// service table is published. Written into a heap descriptor's +1412 so the
+// guest's `bctrl` through that slot reaches the implementation.
+uint32_t cod3_heap_grow_service_address()
+{
+    return cod3_runtime_service_address(RuntimeService_HeapGrow);
+}
 static bool g_runtime_services_ready = false;
 
 // The TLS dispatcher the CRT calls through when a slot holds no value.
@@ -713,6 +724,13 @@ void cod3_register_runtime_services()
     PPCFunc* services[RuntimeService_Count] = {};
     services[RuntimeService_TlsDispatcher] = cod3_tls_dispatcher_stub;
     services[RuntimeService_HeapMethod] = cod3_heap_method_stub;
+
+    // The CRT heap grow method. The guest calls [heap+1412] through `bctrl`
+    // when a heap descriptor has no room, so it has to be reachable through the
+    // same table every other indirect call uses - a host address stored in a
+    // guest field would be called as a host function with the wrong
+    // convention, and a self-pointer would execute the descriptor.
+    services[RuntimeService_HeapGrow] = cod3_heap_grow;
 
     for (size_t i = 0; i < RuntimeService_Count; ++i)
     {
