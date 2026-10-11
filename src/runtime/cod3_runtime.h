@@ -216,6 +216,10 @@ void cod3_set_heap_slot_dumper(void (*fn)());
 // Run the dumper installed above, if any. Called by the crash reporter.
 void cod3_dump_heap_slots();
 
+// Print how many times the instrumented guest functions were entered. Safe to
+// call from a crash reporter: it only reads counters.
+void cod3_report_guest_entries();
+
 // Reserve guest addresses for runtime-supplied functions that kernel APIs hand
 // back to the guest as pointers. Called once during image load.
 void cod3_register_runtime_services();

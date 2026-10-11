@@ -330,6 +330,8 @@ void cod3_install_crash_handler()
         }
 
         print_guest_call_stack();
+        cod3_report_guest_entries();
+        cod3_dump_heap_slots();
         std::fflush(stderr);
 
         // Terminate rather than continue: once the stack is gone there is
