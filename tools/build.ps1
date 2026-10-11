@@ -141,6 +141,18 @@ if ($needRecomp) {
 }
 
 # -----------------------------------------------------------------------------
+# XenonRecomp bakes the indirect-call table address into the generated code
+# (PPC_LOOKUP_FUNC uses PPC_IMAGE_BASE + PPC_IMAGE_SIZE = 0x82C30000, which is
+# inside the PE image). Redirect it to the runtime's table. This must run after
+# any stage that regenerates ppc_context.h, which is why it is here rather than
+# only in the incremental build script.
+Write-Step 'Redirecting indirect calls to the runtime table'
+
+$ppcContext = Join-Path $PpcDir 'ppc_context.h'
+& python (Join-Path $PSScriptRoot 'patch_ppc_context.py') $ppcContext
+if ($LASTEXITCODE -ne 0) { throw 'Indirect-call redirect failed.' }
+
+# -----------------------------------------------------------------------------
 Write-Step 'Generating kernel import stubs'
 
 $stubs = Join-Path $RtDir 'kernel_imports_stubs.cpp'
