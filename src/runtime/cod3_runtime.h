@@ -294,7 +294,11 @@ bool cod3_vm_quiet();
 // See src/runtime/heap_grow_method.cpp for why the loader owns it.
 void cod3_heap_grow(PPCContext& ctx, uint8_t* base);
 uint32_t cod3_heap_grow_service_address();
-void cod3_install_heap_grow_method(uint32_t heap);
+void cod3_install_heap_methods(uint32_t heap);
+
+// Install the critical section a heap descriptor keeps at +1408.
+// See src/runtime/kernel_imports_core.cpp for why the loader owns it.
+void cod3_heap_install_lock(uint32_t heap);
 
 // Print how many CRT heap allocations were skipped by the fault tolerance. Safe
 // to call from a crash reporter.

@@ -167,6 +167,24 @@ PPC_FUNC(sub_823460D8)
 {
     PPC_FUNC_PROLOGUE();
 
+    // Make sure this descriptor has its methods before it is walked.
+    //
+    // Installed here rather than at descriptor creation because creation is not
+    // a single point: the descriptor at the current fault, 0x846A8000, is the
+    // first page NtAllocateVirtualMemory carves and is never returned by
+    // sub_82346D98, so hooking that function left it untouched. Every descriptor
+    // that is ever walked passes through here.
+    if (tolerate())
+    {
+        const uint32_t heap = ctx.r3.u32;
+        if (heap >= g_guest_heap_base &&
+            heap < g_guest_heap_base + g_guest_heap_size &&
+            cod3_load_u32(heap + 1412) == 0)
+        {
+            cod3_install_heap_methods(heap);
+        }
+    }
+
     if (region_unwalkable(ctx.r4.u32))
     {
         note_skip("sub_823460D8", ctx.r4.u32);
@@ -254,7 +272,7 @@ PPC_FUNC(sub_82346D98)
     // lands 0x50 bytes past the structure it belongs to.
     if (tolerate() && ctx.r3.u32 >= 0x50)
     {
-        cod3_install_heap_grow_method(ctx.r3.u32 - 0x50);
+        cod3_install_heap_methods(ctx.r3.u32 - 0x50);
     }
 }
 
@@ -283,7 +301,7 @@ PPC_FUNC(sub_82345E48)
 
         if (inHeap && cod3_load_u32(heap + 1412) == 0)
         {
-            cod3_install_heap_grow_method(heap);
+            cod3_install_heap_methods(heap);
         }
     }
 

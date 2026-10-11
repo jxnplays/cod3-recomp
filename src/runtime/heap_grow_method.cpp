@@ -171,16 +171,27 @@ void cod3_heap_grow(PPCContext& __restrict ctx, uint8_t* base)
 }
 
 // -----------------------------------------------------------------------------
-// cod3_install_heap_grow_method
+// cod3_install_heap_methods
 // -----------------------------------------------------------------------------
 //
-// Writes the method entry onto a heap descriptor the CRT has created, so the
-// guest takes its real grow path instead of the fallback.
+// Populates the two fields of a heap descriptor that sub_82347340 would have
+// installed on hardware, and installs neither here because that function is
+// reached only through the heap dispatch table at 0x8208C600 - it is entry
+// 0x8208C748 - and the kernel heap object owning the descriptor is never
+// constructed. On a 360 the loader constructs it before the CRT starts.
 //
-// Only +1412 is written. The other entries were set by whatever created the
-// descriptor and overwriting them would discard state that may already be
-// correct; +1412 is the one known to be required for the allocator to work.
-void cod3_install_heap_grow_method(uint32_t heap)
+//     +1408   a critical section guarding heap operations
+//     +1412   the grow method sub_82345E48 tests before falling back to raw
+//             allocation
+//
+// Only +1412 was being filled before. +1408 was left null, and it is loaded into
+// r3 and passed straight on as an argument, which is how a fault at a small
+// address happens.
+//
+// Only these two are written. +1416, +1420 and +1424 look like neighbouring
+// fields but are float32 values read with `lfs` - an earlier reading of this
+// area took them for method slots, which was wrong.
+void cod3_install_heap_methods(uint32_t heap)
 {
     if (heap < g_guest_heap_base ||
         heap >= g_guest_heap_base + g_guest_heap_size)
@@ -188,9 +199,9 @@ void cod3_install_heap_grow_method(uint32_t heap)
         return;
     }
 
-    // The guest calls this through `bctrl`, a PPC indirect call, so the address
-    // stored here has to be a slot the indirect table resolves - not a host
-    // pointer, and not a self-pointer.
+    // The grow method. The guest calls [heap+1412] through `bctrl`, so the
+    // address has to be a slot the indirect table resolves - not a host pointer,
+    // and not a self-pointer, which would execute the descriptor.
     const uint32_t slot = cod3_heap_grow_service_address();
     if (slot == 0)
     {
@@ -199,7 +210,13 @@ void cod3_install_heap_grow_method(uint32_t heap)
 
     cod3_store_u32(heap + 1412, slot);
 
+    // The lock. A real Win32 CRITICAL_SECTION, registered where the Rtl* enter
+    // and leave imports will find it.
+    cod3_heap_install_lock(heap);
+
     std::fprintf(stderr,
-        "[cod3] heap: installed grow method 0x%08X into descriptor 0x%08X\n",
-        slot, heap);
+        "[cod3] heap: installed methods into descriptor 0x%08X "
+        "(+1408 lock, +1412 grow = 0x%08X)\n",
+        heap, slot);
+    std::fflush(stderr);
 }

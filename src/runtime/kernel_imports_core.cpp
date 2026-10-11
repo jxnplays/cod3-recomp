@@ -162,6 +162,50 @@ PPC_FUNC(__imp__ExFreePool)
 
 static std::unordered_map<uint32_t, CRITICAL_SECTION*> g_critsecs;
 
+// -----------------------------------------------------------------------------
+// cod3_heap_install_lock
+// -----------------------------------------------------------------------------
+//
+// Install the critical section a heap descriptor keeps at +1408.
+//
+// Normally RtlInitializeCriticalSection is called on it by sub_82347340, which
+// is the only writer. That function is reached solely through the heap dispatch
+// table at 0x8208C600 (it is entry 0x8208C748) and never runs during boot,
+// because the kernel heap object that owns the descriptor is never constructed.
+// On a 360 the loader constructs that object before the CRT ever sees it.
+//
+// So the loader's contribution is made here. The lock is a real Win32
+// CRITICAL_SECTION, registered in the same g_critsecs map the Rtl* enter/leave
+// imports consult, and addressed by real guest heap memory.
+//
+// It lives here rather than in heap_grow_method.cpp because g_critsecs is
+// file-static, and duplicating the map would mean the enter path and the
+// initialiser disagreed about which lock a given guest address referred to.
+void cod3_heap_install_lock(uint32_t heap)
+{
+    // The Win32 object is 40 bytes on x64; round up so the guest block cannot
+    // be overrun by anything that assumes a 360-sized structure.
+    constexpr uint32_t kLockBytes = 64;
+
+    void* mem = cod3_heap_alloc(kLockBytes, 'CHLK');
+    const uint32_t addr =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(mem));
+    if (addr == 0)
+    {
+        std::fprintf(stderr,
+            "[cod3] heap: could not allocate a lock for descriptor 0x%08X; "
+            "+1408 will stay null\n", heap);
+        std::fflush(stderr);
+        return;
+    }
+
+    auto* cs = new CRITICAL_SECTION();
+    InitializeCriticalSection(cs);
+    g_critsecs[addr] = cs;
+
+    cod3_store_u32(heap + 1408, addr);
+}
+
 PPC_FUNC(__imp__RtlInitializeCriticalSection)
 {
     const uint32_t addr = ctx.r3.u32;

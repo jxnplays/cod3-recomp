@@ -287,6 +287,49 @@ method slot. It is not; it is a lock. So the shape of the fix is narrower than
 that commit claimed: there is one method (`+1412`) and one lock (`+1408`), both
 installed by the same never-running function.
 
+#### The heap fault is fixed, and boot reached the GPU layer
+
+`+1408` and `+1412` are both populated now, and the descriptor is chosen at the
+point of use rather than at creation.
+
+**What was wrong with the placement.** The methods were installed from a hook on
+`sub_82346D98`, which returns the descriptor. That covers the descriptors *that
+function creates* — `0x846AB000`, `0x9C5AD000` — and nothing else. The descriptor
+in the faulting walk was **`0x846A8000`**, the first page `NtAllocateVirtualMemory`
+carves, which is never returned by `sub_82346D98`. It had no methods at all.
+
+Hooking creation was the wrong abstraction because creation is not one place. The
+override on `sub_823460D8` already receives the descriptor in `r3`, so installing
+there covers every descriptor the guest ever walks — strictly more general, and
+it needs no list of creators. Guarded on `[+1412] == 0`, so it costs one load per
+walk and nothing once the descriptor is set up.
+
+**The lock is a real one.** `+1408` gets a genuine Win32 `CRITICAL_SECTION`
+registered in the same `g_critsecs` map the `RtlEnterCriticalSection` /
+`RtlLeaveCriticalSection` imports consult, addressed by real guest heap memory.
+Not a stub that returns success — the enter and leave paths find it and lock it.
+
+**Result, measured:**
+
+| | before | after |
+|---|---|---|
+| distinct kernel APIs reached | 10 | **18** |
+| heap allocations skipped | 2 | **0** |
+| boot reaches | CRT heap walk | **GPU ring buffer** |
+
+New APIs now reached include `VdInitializeEngines`, `VdInitializeRingBuffer`,
+`VdSetGraphicsInterruptCallback`, `VdEnableRingBufferRPtrWriteBack`,
+`VdShutdownEngines` and `VdSetSystemCommandBufferGpuIdentifierAddress`.
+
+**The heap fault is no longer tolerated.** There are zero skips, so nothing on
+this path is being worked around — the allocator, the method table and the lock
+are all correct and the guest is using them for real.
+
+That is the first time boot has left the CRT heap entirely and entered the
+graphics stack. Current fault is `sub_822F1E68 +1563`, fault address
+`0x7FC80714` — a host-range address, so it is the runtime or a stub rather than
+the guest.
+
 #### What to do next
 
 Two things, in order.
