@@ -1697,11 +1697,34 @@ PPC_FUNC(__imp__VdSetDisplayMode)
 
 PPC_FUNC(__imp__VdQueryVideoMode)
 {
-    const uint32_t out = ctx.r5.u32;
-    uint32_t dw = 0, dh = 0, dr = 0, df = 0;
-    cod3_host_display_mode(&dw, &dh, &dr, &df);
+    // The out-structure is r3, not r5. The call site (sub_822FDEC8 region) is:
+    //
+    //     addi r3,r1,80
+    //     bl   VdQueryVideoMode
+    //     lwz  r11,80(r1)      ; two dwords read back from +0 and +4
+    //     lwz  r10,84(r1)
+    //
+    // so r3 points at the caller's structure and the caller reads 0 and 4 back
+    // out of it. Treating r5 as the pointer meant the returned structure was
+    // never written, and the caller read whatever was on its stack.
+    const uint32_t out = ctx.r3.u32;
+
     if (out != 0)
-        std::memset(reinterpret_cast<void*>(static_cast<uintptr_t>(out)), 0, 0x20);
+    {
+        uint32_t dw = 0, dh = 0, dr = 0, df = 0;
+        cod3_host_display_mode(&dw, &dh, &dr, &df);
+
+        cod3_store_u32(out + 0x00, dw);
+        cod3_store_u32(out + 0x04, dh);
+        cod3_store_u32(out + 0x08, dr);
+        cod3_store_u32(out + 0x0C, df);
+        // The remainder is zeroed rather than left as stack garbage. The caller
+        // may read further in, and an uninitialised field here reads as a
+        // plausible-looking wrong value rather than as absent.
+        std::memset(reinterpret_cast<void*>(
+                        static_cast<uintptr_t>(out + 0x10)), 0, 0x10);
+    }
+
     ctx.r3.u64 = 0;
 }
 
