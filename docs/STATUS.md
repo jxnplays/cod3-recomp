@@ -115,7 +115,62 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 - CRT thread-local pointer is unset (current frontier)
+### Blocker 2 - heap-core carve faults on a null pointer (current frontier)
+
+Boot reaches thread creation. It now issues `NtCreateEvent`, `NtCreateMutant`,
+`NtWaitForSingleObjectEx`, `NtReleaseMutant`, `NtResumeThread` and
+`KeSetAffinityThread`, none of which it reached before.
+
+```
+guest addr : 0x823460D8  (sub_823460D8, +1088 bytes)
+fault addr : 0x0
+guest regs : r3=0x846A8000 r4=0x9C5B4000 r11=0x00000000
+```
+
+Still inside the heap-core carve (`sub_823478F0` → `sub_82346D98` →
+`sub_823460D8`), reached from `MmAllocatePhysicalMemoryEx` via `sub_82345AB0`.
+
+#### What was fixed to get here
+
+Three distinct faults, in order:
+
+**1. `KeTlsSetValue` returned 0.** `sub_82352998` gates all CRT heap
+initialisation on it, so the free list was never seeded and `sub_82357E48`
+recursed against an empty list — ~6,420 levels, exhausting the host stack.
+
+**2. `r13` was never set.** It is the PowerPC per-thread data register; only two
+functions in the image write it, both thread trampolines that neither run during
+boot. The loader has to build the block. Layout is derived from the guest's own
+displacements: `[r13+0]`, `[r13+256]`, `[r13+268]`, `[r13+336]`, `[r13+17288]`,
+`[r13+17300]`. Offsets the access sites do not pin down are left zero rather than
+guessed.
+
+**3. `MmAllocatePhysicalMemoryEx` was a stub returning 0**, called 60 times, all
+failing. Two bugs in fixing it, both recorded in the source:
+
+- The parameter order. The size is in `r4`, not `r6`; `r6` is the LowestAddress
+  slot and is 0 on the common path, so reading it reported every request as
+  zero-byte. Caught only because 60 identical zero-byte requests is not plausible.
+- It committed where it should reserve. The 370.9 MiB request is the XEX default
+  heap size, reserved as address space. The heap was also too small: at 256 MiB
+  every large request failed, the CRT fell back to an 11 MiB retry, and the
+  structures behind the reservations were never built.
+
+One thing that was a false lead, and is here because it looked conclusive:
+`[r13+256]` read back as zero at fault time with no instruction anywhere near a
+store to it. That looked exactly like the CRT failing to initialise it. Scanning
+all 4,326 words of the block showed every one zeroed, including ones the loader
+had set — so something had cleared the whole block. It was the loader's own bump
+allocator overlapping the region `NtAllocateVirtualMemory` hands out from, so the
+CRT zeroed it as newly allocated memory. The two now have separate regions.
+
+#### Known divergence from hardware
+
+`MmAllocatePhysicalMemoryEx` reserves without committing. A guest read of
+never-written reserved space therefore sees whatever the region held rather than
+faulting. Not yet characterised: whether the guest relies on that fault.
+
+### Previously: CRT thread-local pointer unset
 
 Boot no longer ends in stack exhaustion. `KeTlsSetValue` was returning 0
 unconditionally, and `sub_82352998` gates all CRT heap initialisation on it:
