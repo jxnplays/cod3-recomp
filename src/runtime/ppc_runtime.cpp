@@ -66,6 +66,13 @@ static constexpr uint32_t kCodeBase = 0x820A0000u;
 // End of the recompiled code range, matching PPC_CODE_SIZE.
 static constexpr uint32_t kCodeSize = 0x4FB1B8u;
 
+// The heap method table slot the CRT dereferences during TLS bootstrap.
+//
+// Derived from the guest's own addressing, not guessed:
+//   lis r11,-32110        -> (uint32)(-32110 & 0xFFFF) << 16 = 0x82920000
+//   lwz r11,-3016(r11)    -> 0x82920000 - 3016 = 0x8291F438
+static constexpr uint32_t kHeapMethodSlot = 0x8291F438;
+
 // Target for indirect calls that resolve to no known function.
 //
 // Gaps in the table would otherwise be called through address 0. Pointing them
@@ -74,17 +81,18 @@ static constexpr uint32_t kCodeSize = 0x4FB1B8u;
 static void cod3_unresolved_indirect_report(PPCContext& ctx, uint8_t* base)
 {
     // Report the first few, then go quiet: a bad indirect call in a dispatch loop
-    // would otherwise flood the log and hide everything else.
+// would otherwise flood the log and hide everything else.
     static int reported = 0;
-    if (reported < 8)
+
+    if (reported < 12)
     {
         std::fprintf(stderr,
-            "[cod3] indirect call to an address with no recompiled function "
-            "(r3=0x%08X r4=0x%08X r5=0x%08X)\n",
-            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+            "[cod3] unresolved indirect call from guest 0x%08X "
+            "(r3=0x%08X r4=0x%08X r8=0x%08X)\n",
+            static_cast<uint32_t>(ctx.lr), ctx.r3.u32, ctx.r4.u32, ctx.r8.u32);
         ++reported;
     }
-    else if (reported == 8)
+    else if (reported == 12)
     {
         std::fprintf(stderr,
             "[cod3] (further unresolved indirect calls suppressed)\n");
@@ -112,20 +120,72 @@ PPCFunc* cod3_unresolved_indirect_target = cod3_unresolved_indirect_report;
 enum RuntimeService
 {
     RuntimeService_TlsDispatcher = 0,
+    // The CRT calls this through [0x825F6E38] straight after the dispatcher and
+    // requires a non-zero result, so it must report success.
+    RuntimeService_HeapMethod = 1,
     RuntimeService_Count,
 };
 
 static uint32_t g_runtime_service_base = 0; // guest address of slot 0
 static bool g_runtime_services_ready = false;
 
-// The TLS dispatcher the CRT calls through when a slot holds no value. It
-// reports "not handled" by returning 0, which is what a real dispatcher returns
-// for a slot it does not own, so the CRT takes its normal fallback path rather
-// than jumping to address 0.
+// The TLS dispatcher the CRT calls through when a slot holds no value.
+//
+// This is not a no-op. Verified in sub_82352750 (ppc_recomp.58.cpp):
+//
+//   r3  = TLS slot id
+//   bctrl -> dispatcher
+//   r31 = result                      ; a heap descriptor the CRT writes into
+//   if (r31 != 0) {
+//       r3 = [0x825F6E38]              ; a method table address
+//       bctrl -> method               ; must return non-zero
+//       stw 1,   20(r31)
+//       stw r11, 92(r31)
+//       ...
+//   }
+//
+// So the dispatcher must return a live, zeroed descriptor block, and the method
+// it calls through [0x825F6E38] must return success. Returning 0 leaves r31
+// null and the CRT immediately faults storing to it.
+//
+// The descriptor is a zeroed page; the CRT initialises the rest of it itself
+// (it writes +0, +4, +20, +92). The method table entry is one of the runtime
+// services, which reports success.
 static void cod3_tls_dispatcher_stub(PPCContext& ctx, uint8_t* base)
 {
     (void)base;
-    ctx.r3.u64 = 0;
+
+    // One descriptor per thread, reused across calls.
+    static std::unordered_map<DWORD, uint32_t> descriptors;
+
+    const DWORD id = GetCurrentThreadId();
+    auto it = descriptors.find(id);
+    if (it == descriptors.end())
+    {
+        auto* mem = cod3_pool_alloc(0x1000, 'HEAP', 0);
+        if (mem == nullptr)
+        {
+            ctx.r3.u64 = 0;
+            return;
+        }
+        const uint32_t addr = static_cast<uint32_t>(
+            reinterpret_cast<uintptr_t>(mem));
+        // The descriptor is guest-visible, so its fields are big-endian. The
+        // CRT zero-fills the ones it cares about before reading them, and the
+        // page arrives zeroed, so no explicit store is needed here.
+        it = descriptors.emplace(id, addr).first;
+    }
+
+    ctx.r3.u32 = it->second;
+}
+
+// The CRT calls this immediately after the TLS dispatcher and requires a
+// non-zero result before it will initialise the heap descriptor. Reporting
+// success is all it asks for; the CRT then fills the descriptor in itself.
+static void cod3_heap_method_stub(PPCContext& ctx, uint8_t* base)
+{
+    (void)base;
+    ctx.r3.u32 = 1; // success
 }
 
 // Reserve `count` consecutive free table slots directly above the highest guest
@@ -160,6 +220,7 @@ void cod3_register_runtime_services()
 
     PPCFunc* services[RuntimeService_Count] = {};
     services[RuntimeService_TlsDispatcher] = cod3_tls_dispatcher_stub;
+    services[RuntimeService_HeapMethod] = cod3_heap_method_stub;
 
     for (size_t i = 0; i < RuntimeService_Count; ++i)
     {
@@ -174,6 +235,27 @@ void cod3_register_runtime_services()
     std::fprintf(stderr,
         "[cod3] runtime services at 0x%08X (table slots %zu..%zu)\n",
         g_runtime_service_base, first, first + RuntimeService_Count - 1);
+
+    // Publish the heap method table entry the CRT dereferences directly.
+    //
+    // Verified in sub_82352750:
+    //   lis r11,-32110            ; 0x828C0000
+    //   lwz r3,28212(r30)         ; descriptor argument
+    //   lwz r11,-3016(r11)        ; [0x828BF438] -> method pointer
+    //   mtctr r11 ; bctrl
+    //
+    // That slot lives in the title's .data and is zero in the raw XEX. On
+    // hardware the loader installs the real method there.
+    cod3_store_u32(kHeapMethodSlot,
+                   cod3_runtime_service_address(RuntimeService_HeapMethod));
+
+    const uint32_t verifyMethod = cod3_load_u32(kHeapMethodSlot);
+    if (verifyMethod != cod3_runtime_service_address(RuntimeService_HeapMethod))
+    {
+        std::fprintf(stderr,
+            "[cod3] heap method slot 0x%08X write-back failed (read 0x%08X)\n",
+            kHeapMethodSlot, verifyMethod);
+    }
 }
 
 // Return the guest address the guest should call for a given runtime service,

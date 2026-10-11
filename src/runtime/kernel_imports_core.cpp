@@ -976,6 +976,12 @@ PPC_FUNC(__imp__KeTlsGetValue)
     if (value == 0)
         value = cod3_runtime_service_address(Cod3RuntimeService_TlsDispatcher);
 
+    if (vm_quiet)
+    {
+        std::fprintf(stderr, "[cod3] KeTlsGetValue(slot=%u) -> 0x%08X\n",
+                     slot, value);
+    }
+
     SET_R3(ctx, value);
 }
 
