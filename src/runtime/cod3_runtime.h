@@ -300,6 +300,11 @@ void cod3_install_heap_methods(uint32_t heap);
 // See src/runtime/kernel_imports_core.cpp for why the loader owns it.
 void cod3_heap_install_lock(uint32_t heap);
 
+// Guest MMIO stores. Redirected centrally by tools/patch_ppc_context.py so all
+// eleven sites are captured at once; see src/runtime/gpu_command_processor.cpp.
+void cod3_mmio_store_u32(uint8_t* base, uint32_t addr, uint32_t value);
+void cod3_report_gpu_stream();
+
 // Print how many CRT heap allocations were skipped by the fault tolerance. Safe
 // to call from a crash reporter.
 void cod3_report_heap_tolerance();
