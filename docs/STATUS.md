@@ -330,6 +330,54 @@ graphics stack. Current fault is `sub_822F1E68 +1563`, fault address
 `0x7FC80714` — a host-range address, so it is the runtime or a stub rather than
 the guest.
 
+#### Boot is programming the Xenos GPU — the interception point is located
+
+The current fault looked like a host pointer leak: `r11 = 0x7FC80000`, fault at
+`r11 + 0x714`. **It is not a leak.** The instruction is
+
+```asm
+loc_822F1FE4:
+    stw   r29,10820(r26)
+    sync
+    lis   r11,32712          ; r11 = 0x7FC80000
+    stw   r29,1812(r11)      ; MMIO write to 0x7FC80000 + 0x714
+    eieio
+    sync
+```
+
+`lis` for the address, with `sync`/`eieio` fences bracketing the access, is
+memory-mapped I/O — this is the guest writing the **Xenos GPU command
+processor**. There is no such device on the PC, which is why it faults. Nothing
+is wrong; this is where a port has to intercept.
+
+**The job is smaller than feared.** Surveying every MMIO access in the recompiled
+guest (`tools/mmio_survey.py`):
+
+```
+total MMIO accesses:  11
+instruction forms:   PPC_MM_STORE_U32 x11   (no byte/half/dword loads at all)
+distinct addresses:  9  (displacements 0x000, 0x714, 0x3214, 0x3408, 0x6110)
+functions involved:  9
+```
+
+Eleven stores in nine functions, all 32-bit, all through `PPC_MM_STORE_U32`. The
+displacements are Xenos command-processor register offsets, with `+0x0000` being
+the command write port the ring buffer is pushed through.
+
+**Why this matters for the 50% target.** The entire Xenos command stream reaches
+the hardware through these eleven sites. Intercepting `PPC_MM_STORE_U32` when
+the target falls in the `0x7FC80000` range captures the complete command
+sequence as it is produced — which is exactly the stream that has to be
+translated into D3D9 for anything to appear on screen.
+
+That reframes shader translation too. The vertex and pixel programs travel as
+*commands in this same stream*, not as separate blobs to be found. So the Xenos
+bytecode to DXBC work is downstream of intercepting here, rather than an
+independent task to go and locate the shaders in the image.
+
+This is the first point in the project where the graphics work has a defined,
+enumerable surface to attack rather than a guess about where rendering happens.
+
 #### What to do next
 
 Two things, in order.
