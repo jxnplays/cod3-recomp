@@ -159,6 +159,19 @@ PPCFunc* cod3_lookup_indirect_call(uint32_t guest, const PPCContext& ctx)
     return cod3_lookup_indirect(guest);
 }
 
+static void (*g_heap_slot_dumper)() = nullptr;
+
+void cod3_set_heap_slot_dumper(void (*fn)())
+{
+    g_heap_slot_dumper = fn;
+}
+
+void cod3_dump_heap_slots()
+{
+    if (g_heap_slot_dumper != nullptr)
+        g_heap_slot_dumper();
+}
+
 // -----------------------------------------------------------------------------
 // Runtime service addresses
 // -----------------------------------------------------------------------------
@@ -881,6 +894,26 @@ bool cod3_load_image(const char* xex_path)
             std::fprintf(stderr, "    0x%08X = 0x%08X   %s\n", s.va,
                          cod3_load_u32(s.va), s.what);
         }
+
+        // Re-read these on demand. At load time the page heap has not been
+        // built yet, so the interesting values only exist once the CRT has run.
+        cod3_set_heap_slot_dumper(
+            []()
+            {
+                std::fprintf(stderr, "[cod3] heap/descriptor slots (live):\n");
+                struct { uint32_t va; const char* what; } live[] = {
+                    { 0x8291F6C8, "method pointer read by sub_8235A688" },
+                    { 0x8291F6CC, "gate checked before that call" },
+                    { 0x82BEA9C0, "page heap descriptor" },
+                    { 0x82BEAAE4, "descriptor written by sub_8234BE28 (-21788)" },
+                    { 0x82BEAAE8, "descriptor written by sub_8234BE28 (-21784)" },
+                };
+                for (const auto& s : live)
+                {
+                    std::fprintf(stderr, "    0x%08X = 0x%08X   %s\n", s.va,
+                                 cod3_load_u32(s.va), s.what);
+                }
+            });
     }
 
     std::fprintf(stderr,

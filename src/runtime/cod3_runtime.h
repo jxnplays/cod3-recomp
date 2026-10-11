@@ -200,6 +200,16 @@ enum
     Cod3RuntimeService_TlsDispatcher = 0,
 };
 
+// Optional hook run by the crash reporter before it prints.
+//
+// The CRT's heap bookkeeping lives in guest globals that only acquire values
+// once the title has run for a while, so the interesting state is not
+// observable at load time. Installing a dumper lets the crash report show it.
+void cod3_set_heap_slot_dumper(void (*fn)());
+
+// Run the dumper installed above, if any. Called by the crash reporter.
+void cod3_dump_heap_slots();
+
 // Reserve guest addresses for runtime-supplied functions that kernel APIs hand
 // back to the guest as pointers. Called once during image load.
 void cod3_register_runtime_services();

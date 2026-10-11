@@ -158,6 +158,11 @@ void print_guest_call_stack()
             "    (no frames fell inside a translated function; the fault is "
             "in the runtime itself)\n");
     }
+
+    // Guest globals only acquire meaningful values once the CRT has been
+    // running, so the heap and descriptor state is dumped here rather than at
+    // load time, when it would always read as zero.
+    cod3_dump_heap_slots();
 }
 
 } // namespace
