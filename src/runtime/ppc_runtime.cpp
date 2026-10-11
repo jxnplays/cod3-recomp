@@ -1198,6 +1198,34 @@ uint32_t cod3_xex_default_field_slot(uint32_t field)
     nextFree += pageSize;
 
     std::memset(reinterpret_cast<void*>(static_cast<uintptr_t>(slot)), 0, pageSize);
+
+    // Not every absent field defaults to zero - the CRT reads some of them as
+    // "is this feature enabled" flags, and answering zero makes it skip setup
+    // it then depends on.
+    //
+    // XEX_HEADER_XAPI_HEAP_SIZE (0x00020401) is the case that matters. In
+    // sub_82349CC0 the CRT queries it and:
+    //
+    //     lwz  r30,0(r3)            ; the returned value
+    //     cmplwi r30,0
+    //     bne  <skip page heap>
+    //     li   r3,1 ; b <return 1>  ; zero means "no page heap required"
+    //
+    // Returning 1 tells the caller the page heap is unnecessary, so it never
+    // runs sub_82347340 and the heap descriptor global at 0x82BEA9C0 stays
+    // null. The very next allocation then reads that null descriptor and the
+    // title faults at sub_823478F0 dereferencing offset 0x14.
+    //
+    // A non-zero answer takes the other branch and the page heap really is
+    // created, which is what the rest of the CRT expects. 16 MiB is the XDK's
+    // default page-heap reservation.
+    constexpr uint32_t XEX_HEADER_XAPI_HEAP_SIZE = 0x00020401u;
+    if (field == XEX_HEADER_XAPI_HEAP_SIZE)
+    {
+        const uint32_t value = 16u * 1024u * 1024u;
+        cod3_store_u32(slot, value);
+    }
+
     slots.emplace(field, slot);
     return slot;
 }
