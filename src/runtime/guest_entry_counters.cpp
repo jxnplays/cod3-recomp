@@ -27,8 +27,6 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace {
-
 struct Counters
 {
     unsigned long long d08 = 0;
@@ -62,7 +60,39 @@ struct Counters
     unsigned long long alloc_first_r4 = 0;
     unsigned long long alloc_first_r5 = 0;
     unsigned long long alloc_last_r3 = 0;
+
+    // sub_82344CF8 is the XEX entry body. It calls these four in sequence:
+    //
+    //   0x82344D34  sub_82349D98
+    //   0x82344D3C  sub_82349BF0
+    //   0x82344D40  sub_82344B30
+    //   0x82344D54  sub_82352998   <- the only caller of the free-list seeder
+    //
+    // The seeder's call site is unconditional, so if its counter reads zero
+    // then one of the three earlier calls never returned. Counting all four
+    // identifies which, without guessing.
+    unsigned long long s49d98 = 0;
+    unsigned long long s49bf0 = 0;
+    unsigned long long s44b30 = 0;
+    unsigned long long s52998 = 0;
 };
+
+// A shared counter for the four functions sub_82344CF8 calls in order. Wrapping
+// each of them costs one host frame apiece, which slightly deepens any guest
+// recursion - enough to change when the stack runs out, not enough to change
+// whether it runs. That caveat is why the counts below are compared against each
+// other rather than treated as absolute depths.
+#define COD3_COUNTED_WRAPPER(name, field)                                      \
+    extern "C" void __imp__##name(PPCContext& __restrict ctx, uint8_t* base);  \
+    PPC_FUNC(name)                                                            \
+    {                                                                         \
+        PPC_FUNC_PROLOGUE();                                                   \
+        counters().field++;                                                    \
+        __imp__##name(ctx, base);                                              \
+    }
+
+// The four functions sub_82344CF8 calls in order are wrapped at the end of this
+// file, once counters() is visible.
 
 // sub_82357D08 and sub_82357E48 index the same list but with different
 // registers:
@@ -98,8 +128,6 @@ bool tracing()
 // before the host stack is exhausted. Both are the same guest code path - the
 // output is simply slow enough to change how the host stack is consumed - so
 // per-entry output cannot be used to judge depth. The counters can.
-
-} // namespace
 
 extern "C" void __imp__sub_82357D08(PPCContext& __restrict ctx, uint8_t* base);
 extern "C" void __imp__sub_82357E48(PPCContext& __restrict ctx, uint8_t* base);
@@ -435,5 +463,35 @@ void cod3_report_guest_entries()
             "  first r3=0x%08X r4=0x%08X r5=0x%08X  last r3=0x%08X\n",
             c.alloc10b0, c.alloc_first_r3, c.alloc_first_r4,
             c.alloc_first_r5, c.alloc_last_r3);
+
+        // sub_82344CF8 calls these in order. The first with a non-trivial count
+        // is where the recursion actually is; anything after it is never
+        // reached, which is why the seeder's count is zero.
+        std::fprintf(stderr,
+            "[entries] entry order: sub_82349D98 = %llu,"
+            " sub_82349BF0 = %llu, sub_82344B30 = %llu,"
+            " sub_82352998 = %llu\n",
+            c.s49d98, c.s49bf0, c.s44b30, c.s52998);
     }
 }
+
+// -----------------------------------------------------------------------------
+// The four functions sub_82344CF8 calls, in order
+// -----------------------------------------------------------------------------
+//
+// They are emitted here, at the end of the file, because the macro needs
+// counters() in scope and they need external linkage: a strong definition that
+// overrides XenonRecomp's weak alias cannot live in an anonymous namespace.
+//
+//   0x82344D34  sub_82349D98
+//   0x82344D3C  sub_82349BF0
+//   0x82344D40  sub_82344B30
+//   0x82344D54  sub_82352998   <- the only caller of the free-list seeder
+//
+// The seeder's call site is unconditional, so if its count reads zero then one of
+// the three earlier calls never returned. Counting all four says which, rather
+// than leaving it to be guessed at.
+COD3_COUNTED_WRAPPER(sub_82349D98, s49d98)
+COD3_COUNTED_WRAPPER(sub_82349BF0, s49bf0)
+COD3_COUNTED_WRAPPER(sub_82344B30, s44b30)
+COD3_COUNTED_WRAPPER(sub_82352998, s52998)

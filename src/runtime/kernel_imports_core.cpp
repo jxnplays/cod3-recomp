@@ -1022,7 +1022,29 @@ PPC_FUNC(__imp__KeTlsSetValue)
     if (slot < kMaxTlsSlots)
         tls.values[slot] = value;
 
-    ctx.r3.u64 = 0;
+    // Returns the value that was stored, not zero.
+    //
+    // This was returning 0 unconditionally, and that single byte is what stops
+    // the title from ever initialising its heap. sub_82352998 gates CRT setup on
+    // it:
+    //
+    //   0x823529F8  bl    sub_82352998 -> KeTlsSetValue
+    //   0x823529FC  cmpwi r3,0
+    //   0x82352A00  beq   0x82352abc      bail out when r3 == 0
+    //   0x82352A04  bl    sub_82352628
+    //   0x82352A08  bl    sub_82357BF0    <- seeds the 36 free-list slots
+    //
+    // With r3 always 0 the branch is always taken and sub_82357BF0 never runs,
+    // so every size class in the CRT free list stays empty. sub_82357D08 then
+    // tries to pop from class 10, sees a zero head, allocates another 28-byte
+    // node and calls back into sub_82357E48 - which also sees a zero head and
+    // calls back again. That pair runs until the host stack is exhausted,
+    // which is how boot ends. Measured at ~6,420 levels.
+    //
+    // Verified against the guest's own use of the result: the value is compared
+    // against 0 to decide whether to continue, never for a status code, so
+    // echoing back what was stored is what it expects.
+    ctx.r3.u64 = value;
 }
 
 // -----------------------------------------------------------------------------
