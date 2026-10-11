@@ -81,6 +81,14 @@ name = "HeapSeedNodeEntry"
 address = 0x82357D44
 registers = ["r29", "r30", "r28"]
 
+# The very first instruction of sub_82357D08. The call stack names this
+# function on every level of the recursion, but the hooks further down never
+# fire, so this establishes whether it is entered at all and how often.
+[[midasm_hook]]
+name = "HeapNodeEntry"
+address = 0x82357D08
+registers = ["r3", "r31"]
+
 # The actual exit test for the recursion, and the instruction immediately after
 # the recursive call returns:
 #
@@ -111,6 +119,7 @@ registers = ["r30", "r31"]
 name = "HeapListSeedStore"
 address = 0x82357DD8
 registers = ["r28", "r29", "r30"]
+
 
 
 

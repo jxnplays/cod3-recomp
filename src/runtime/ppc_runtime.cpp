@@ -227,6 +227,26 @@ void HeapListSeedGate(PPCRegister& r3, PPCRegister& r4)
 
 static void (*g_heap_slot_dumper)() = nullptr;
 
+// The first instruction of sub_82357D08.
+//
+// The call stack names this function on every level of the recursion, but
+// hooks further down its body never fire. This one counts entries directly, so
+// "the stack says it recurses" can be checked against "it is entered N times".
+//
+// Wired up by the HeapNodeEntry entry in config/recomp/COD3.toml.
+void HeapNodeEntry(PPCRegister& r3, PPCRegister& r31)
+{
+    static int calls = 0;
+    ++calls;
+
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || calls > 12)
+        return;
+
+    std::fprintf(stderr,
+        "[heap-node-entry] call #%d r3=0x%08X r31=0x%08X\n",
+        calls, r3.u32, r31.u32);
+}
+
 // The exit test for the sub_82357E48 / sub_82357D08 recursion:
 //
 //   0x82357D90  bl   sub_82357E48      ; recurse

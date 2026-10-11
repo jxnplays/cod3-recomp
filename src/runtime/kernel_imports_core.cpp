@@ -989,7 +989,17 @@ PPC_FUNC(__imp__KeTlsGetValue)
 
     // An unset slot must still yield something the guest can call, because the
     // CRT invokes the result indirectly.
-    if (value == 0)
+    //
+    // Not every caller wants that, though. sub_82352690 checks the result for
+    // zero and, seeing zero, calls KeTlsSetValue to install the default. If
+    // this returns the dispatcher stub instead, the guest takes the "already
+    // has a value" branch, never installs its own default, and every later
+    // error path operates on a stub rather than a thread error record -
+    // which is what produced the fault at address 0x48.
+    //
+    // So the substitution is opt-in: COD3_TLS_STUB=1 restores the old
+    // behaviour for diagnosing the call site that needs it.
+    if (value == 0 && std::getenv("COD3_TLS_STUB") != nullptr)
         value = cod3_runtime_service_address(Cod3RuntimeService_TlsDispatcher);
 
     if (vm_quiet)
