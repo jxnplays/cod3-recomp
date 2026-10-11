@@ -53,6 +53,11 @@ HAND_IMPLEMENTED = {
     "MmAllocatePhysicalMemoryEx",
     # virtual memory
     "NtAllocateVirtualMemory", "NtFreeVirtualMemory", "NtQueryVirtualMemory",
+    # Implemented in src/runtime/kernel_imports_core.cpp. Real Win32 objects
+    # underneath, so a guest that waits on an event really blocks. These were
+    # being called ten times each and returning nothing.
+    "NtCreateEvent", "NtCreateMutant", "NtWaitForSingleObjectEx",
+    "NtReleaseMutant", "NtResumeThread", "KeSetAffinityThread",
     # module / export resolution (the game resolves most of D3D dynamically)
     "XexGetModuleHandle", "XexGetProcedureAddress", "XexGetXEntryInfo",
     "XexGetOptionalXEntryInfo", "XexGetTitleId",

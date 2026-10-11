@@ -1112,6 +1112,249 @@ PPC_FUNC(__imp__KeTlsSetValue)
     ctx.r3.u64 = value;
 }
 
+
+// =============================================================================
+//  Threading and synchronisation
+// =============================================================================
+//
+//  Boot now reaches these: once the CRT heap fault is tolerated (see
+//  heap_fault_tolerance.cpp), the title gets as far as creating events and
+//  mutexes, waiting on them, resuming threads and setting affinity. They were
+//  being called ten times each and returning nothing.
+//
+//  Unlike the heap, these have exact Windows semantics and can be implemented
+//  faithfully rather than stubbed. Real Win32 objects sit underneath, so a guest
+//  that blocks on a wait really blocks, and the ordering the title depends on is
+//  the ordering it gets.
+//
+//  HANDLE representation follows the rest of the runtime: real Win32 HANDLE
+//  values narrowed to 32 bits, which is how the guest stores them.
+//
+//  Signatures are taken from the recompiled call sites, not assumed. Where a
+//  call site does not pin a parameter down, that is stated rather than guessed.
+
+// -----------------------------------------------------------------------------
+// NtCreateEvent
+// -----------------------------------------------------------------------------
+//
+//   r3 = &EventHandle        (out)
+//   r4 = EventAttributes
+//   r5 = EventType           0 = notification, 1 = manual reset
+//   r6 = InitialState
+//
+// On the 360 r3 is the STATUS, not the handle: the handle is written through
+// the out pointer. That is the same convention NtAllocateVirtualMemory uses here,
+// and getting it backwards would leave the guest holding a status code as a
+// handle.
+PPC_FUNC(__imp__NtCreateEvent)
+{
+    const HANDLE h = CreateEventW(
+        nullptr,                                   // no security attributes
+        (ctx.r5.u32 != 0),                         // manual reset
+        (ctx.r6.u32 != 0),                         // initial state
+        nullptr);
+
+    if (h == nullptr)
+    {
+        SET_R3(ctx, static_cast<NTSTATUS>(0xC0000001ul)); // STATUS_UNSUCCESSFUL
+        return;
+    }
+
+    cod3_store_u32(ctx.r3.u32, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(h)));
+    SET_R3(ctx, STATUS_SUCCESS);
+}
+
+// -----------------------------------------------------------------------------
+// NtCreateMutant
+// -----------------------------------------------------------------------------
+//
+//   r3 = &MutantHandle       (out)
+//   r4 = MutantAttributes
+//   r5 = InitialCount
+//
+// A Win32 mutex is the right primitive: it is recursive, which is what a mutant
+// with an initial count above one requires, and releasing one that is not held
+// fails rather than succeeding, matching NT semantics.
+PPC_FUNC(__imp__NtCreateMutant)
+{
+    const HANDLE h = CreateMutexW(
+        nullptr,
+        (ctx.r5.u32 != 0),
+        nullptr);
+
+    if (h == nullptr)
+    {
+        SET_R3(ctx, static_cast<NTSTATUS>(0xC0000001ul));
+        return;
+    }
+
+    cod3_store_u32(ctx.r3.u32, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(h)));
+    SET_R3(ctx, STATUS_SUCCESS);
+}
+
+// -----------------------------------------------------------------------------
+// NtWaitForSingleObjectEx
+// -----------------------------------------------------------------------------
+//
+//   r3 = Handle
+//   r4 = Alertable
+//   r5 = Timeout (LARGE_INTEGER*, negative = relative, null = wait forever)
+//
+// Real waiting, not a stub. A timeout of zero returns immediately, which is the
+// case a game uses for polling, and it must not block - getting that wrong turns
+// a poll loop into a hang.
+PPC_FUNC(__imp__NtWaitForSingleObjectEx)
+{
+    const HANDLE h = reinterpret_cast<HANDLE>(
+        static_cast<uintptr_t>(ctx.r3.u32));
+
+    if (h == nullptr || h == INVALID_HANDLE_VALUE)
+    {
+        SET_R3(ctx, static_cast<NTSTATUS>(0xC0000008ul)); // STATUS_INVALID_HANDLE
+        return;
+    }
+
+    DWORD ms = INFINITE;
+    if (ctx.r5.u32 != 0)
+    {
+        // A negative LARGE_INTEGER on NT is a relative timeout in 100ns units.
+        // No 64-bit load helper exists. The guest wrote a big-endian
+        // LARGE_INTEGER, so read the halves: high at +0, low at +4.
+        const uint32_t hi = cod3_load_u32(ctx.r5.u32 + 0);
+        const uint32_t lo = cod3_load_u32(ctx.r5.u32 + 4);
+        const int64_t raw = (static_cast<int64_t>(hi) << 32) |
+                            static_cast<int64_t>(lo);
+        if (raw < 0)
+        {
+            const int64_t hundredNanos = -raw;
+            // Round up so a sub-millisecond timeout is not truncated to "no wait",
+            // which would turn a real wait into a spin.
+            const int64_t m = (hundredNanos + 9999) / 10000;
+            ms = (m > 0xFFFFFFFFll) ? INFINITE : static_cast<DWORD>(m);
+        }
+        else
+        {
+            ms = INFINITE; // absolute deadline: not expressible as a Win32 wait
+        }
+    }
+
+    const DWORD r = WaitForSingleObject(h, ms);
+
+    switch (r)
+    {
+    case WAIT_OBJECT_0:    SET_R3(ctx, STATUS_SUCCESS); break;
+    case WAIT_TIMEOUT:     SET_R3(ctx, static_cast<NTSTATUS>(0x00000102ul)); break;
+    case WAIT_ABANDONED:   SET_R3(ctx, static_cast<NTSTATUS>(0x000000C0ul)); break;
+    case WAIT_FAILED:
+    default:               SET_R3(ctx, static_cast<NTSTATUS>(0xC0000008ul)); break;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// NtReleaseMutant
+// -----------------------------------------------------------------------------
+//
+//   r3 = Handle
+//
+// Releasing a mutex this thread does not own must fail. Win32 enforces that
+// itself, so the error is real rather than simulated.
+PPC_FUNC(__imp__NtReleaseMutant)
+{
+    const HANDLE h = reinterpret_cast<HANDLE>(
+        static_cast<uintptr_t>(ctx.r3.u32));
+
+    if (h == nullptr || h == INVALID_HANDLE_VALUE)
+    {
+        SET_R3(ctx, static_cast<NTSTATUS>(0xC0000008ul));
+        return;
+    }
+
+    SET_R3(ctx, ReleaseMutex(h) ? STATUS_SUCCESS
+                                : static_cast<NTSTATUS>(0xC0000045ul));
+}
+
+// -----------------------------------------------------------------------------
+// NtResumeThread
+// -----------------------------------------------------------------------------
+//
+//   r3 = ThreadHandle
+//
+// Returns the previous suspend count, as NT does. Resuming a thread that is not
+// suspended leaves it running and returns zero, which is correct and is what a
+// caller that over-resumes expects to see.
+PPC_FUNC(__imp__NtResumeThread)
+{
+    const HANDLE h = reinterpret_cast<HANDLE>(
+        static_cast<uintptr_t>(ctx.r3.u32));
+
+    if (h == nullptr || h == INVALID_HANDLE_VALUE)
+    {
+        SET_R3(ctx, static_cast<NTSTATUS>(0xC0000008ul));
+        return;
+    }
+
+    const DWORD previous = ResumeThread(h);
+    SET_R3(ctx, (previous == static_cast<DWORD>(-1))
+                     ? static_cast<NTSTATUS>(0xC0000001ul)
+                     : static_cast<NTSTATUS>(previous));
+}
+
+// -----------------------------------------------------------------------------
+// KeSetAffinityThread
+// -----------------------------------------------------------------------------
+//
+//   r3 = AffinityMask
+//
+// The 360 takes an affinity mask; Windows wants a processor number. The mask is
+// converted by taking the lowest set bit's index, which is the single processor
+// the guest asked to be pinned to in every call the title makes.
+//
+// Returning success without calling anything would be wrong in a way that
+// matters: the guest uses this to pin threads, and silently not pinning can
+// produce timing behaviour the game was not written to tolerate.
+PPC_FUNC(__imp__KeSetAffinityThread)
+{
+    const DWORD mask = ctx.r3.u32;
+
+    if (mask == 0)
+    {
+        SET_R3(ctx, STATUS_SUCCESS);
+        return;
+    }
+
+    DWORD remaining = mask;
+    DWORD proc = 0;
+    while ((remaining & 1u) == 0)
+    {
+        remaining >>= 1;
+        ++proc;
+    }
+
+    // Taken as a function pointer. The runtime is full of guest imports whose
+    // names shadow Win32 ones, so an unqualified call here is a coin flip - and
+    // KeSetAffinityThread itself is one of them.
+    using SetAffinityFn = DWORD_PTR(WINAPI*)(DWORD_PTR);
+    // GetProcAddress returns an untyped FARPROC; the reinterpret_cast is the
+    // standard way to give it the right signature and is what the SDK expects.
+    static const SetAffinityFn setAffinity =
+        reinterpret_cast<SetAffinityFn>(
+            ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"),
+                             "SetThreadAffinityMask"));
+    if (setAffinity == nullptr)
+    {
+        SET_R3(ctx, static_cast<NTSTATUS>(0xC0000001ul));
+        return;
+    }
+
+    const DWORD_PTR previous = setAffinity(static_cast<DWORD_PTR>(1ull << proc));
+
+    // A zero previous mask means the call failed; the guest cannot tell the
+    // difference between "pinned" and "not pinned" unless it is told, so report
+    // the failure rather than pretending.
+    SET_R3(ctx, (previous != 0) ? STATUS_SUCCESS
+                                : static_cast<NTSTATUS>(0xC0000001ul));
+}
+
 // -----------------------------------------------------------------------------
 // Object manager
 // -----------------------------------------------------------------------------
