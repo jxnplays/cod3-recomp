@@ -89,6 +89,30 @@ name = "HeapNodeEntry"
 address = 0x82357D08
 registers = ["r3", "r31"]
 
+# sub_82357D08 allocates one 28-byte node through sub_823510B0 and, if that
+# returns null, takes an error path that ends at 0x82357DF4 returning 0. This
+# hook sits on the test, so a null result is visible directly.
+#
+#   0x82357D68  bl   sub_823510B0
+#   0x82357D6C  mr   r28,r3
+#   0x82357D70  bne  <allocated>       ; non-zero -> carry on
+#   ...                                ; zero -> error path
+[[midasm_hook]]
+name = "HeapNodeAllocResult"
+address = 0x82357D70
+registers = ["r3", "r28"]
+
+# The recursive call site. The call stack shows sub_82357D08 returning to
+# 0x82357D08 + 0x258, so the loop passes through here rather than through the
+# function entry the earlier hook watched.
+#
+#   0x82357D90  bl   sub_82357E48   -> 0x82357D94
+#   ... on return, 0x82357D98 tests the list head and either stops or goes on
+[[midasm_hook]]
+name = "HeapNodeRecurse"
+address = 0x82357D90
+registers = ["r29", "r30"]
+
 # The actual exit test for the recursion, and the instruction immediately after
 # the recursive call returns:
 #
@@ -119,6 +143,8 @@ registers = ["r30", "r31"]
 name = "HeapListSeedStore"
 address = 0x82357DD8
 registers = ["r28", "r29", "r30"]
+
+
 
 
 

@@ -227,6 +227,49 @@ void HeapListSeedGate(PPCRegister& r3, PPCRegister& r4)
 
 static void (*g_heap_slot_dumper)() = nullptr;
 
+// The recursive call in sub_82357D08.
+//
+//   0x82357D90  bl   sub_82357E48
+//
+// sub_82357E48 calls straight back into sub_82357D08, so this is the edge the
+// call stack keeps repeating. Watching the list head at this point shows
+// whether anything is making progress between iterations.
+//
+// Wired up by the HeapNodeRecurse entry in config/recomp/COD3.toml.
+void HeapNodeRecurse(PPCRegister& r29, PPCRegister& r30)
+{
+    static int calls = 0;
+    ++calls;
+
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || calls > 12)
+        return;
+
+    std::fprintf(stderr,
+        "[heap-recurse] #%d slot=[0x%08X] head=0x%08X\n",
+        calls, r29.u32 + r30.u32, cod3_load_u32(r29.u32 + r30.u32));
+}
+
+// The result of sub_82357D08's 28-byte allocation.
+//
+//   0x82357D68  bl   sub_823510B0
+//   0x82357D70  bne  <allocated>
+//
+// A null result sends it down an error path that returns 0, which is how the
+// page-heap free list fails to get seeded.
+//
+// Wired up by the HeapNodeAllocResult entry in config/recomp/COD3.toml.
+void HeapNodeAllocResult(PPCRegister& r3, PPCRegister& r28)
+{
+    static int printed = 0;
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || printed >= 8)
+        return;
+    ++printed;
+
+    std::fprintf(stderr,
+        "[heap-node-alloc] 28-byte allocation returned 0x%08X (%s)\n",
+        r3.u32, r3.u32 != 0 ? "ok" : "NULL - error path");
+}
+
 // The first instruction of sub_82357D08.
 //
 // The call stack names this function on every level of the recursion, but

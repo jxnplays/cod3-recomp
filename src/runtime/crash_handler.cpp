@@ -285,21 +285,29 @@ void cod3_install_crash_handler()
         if (bad >= kGuestImageBase && bad < kGuestImageBase + 0x10000000ull)
             return EXCEPTION_CONTINUE_SEARCH;
 
+        // Only a stack overflow means "ran off the bottom of the host stack".
+        // Saying so for every fault outside the guest address space was
+        // misleading - it led to chasing a non-existent recursion when the
+        // fault was an ordinary access violation at a bad pointer.
+        const bool isStackOverflow =
+            rec->ExceptionCode == EXCEPTION_STACK_OVERFLOW;
+
         std::fflush(stdout);
         std::fprintf(stderr,
             "\n"
             "================================================================\n"
             "[cod3] FATAL (vectored): %s (0x%08X)\n"
             "[cod3]   host PC     : 0x%016llX\n"
-            "[cod3]   fault addr  : 0x%llX\n"
-            "[cod3]   this is outside the guest address space, which for a\n"
-            "[cod3]   stack overflow means the guest ran off the bottom of the\n"
-            "[cod3]   host stack and the unhandled filter could not run.\n",
+            "[cod3]   fault addr  : 0x%llX%s\n",
             describe_exception(rec->ExceptionCode),
             static_cast<uint32_t>(rec->ExceptionCode),
             static_cast<unsigned long long>(
                 reinterpret_cast<uintptr_t>(rec->ExceptionAddress)),
-            static_cast<unsigned long long>(bad));
+            static_cast<unsigned long long>(bad),
+            isStackOverflow
+                ? "  (stack overflow: the guest ran off the bottom of the\n"
+                  "[cod3]   host stack, so the unhandled filter could not run)"
+                : "  (not a guest address - a bad host-side pointer)");
 
         // Attribute the host PC even here. The unhandled filter normally does
         // this, but it cannot run once the stack is gone, and without it the
