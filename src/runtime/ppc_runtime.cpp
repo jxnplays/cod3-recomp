@@ -159,6 +159,52 @@ PPCFunc* cod3_lookup_indirect_call(uint32_t guest, const PPCContext& ctx)
     return cod3_lookup_indirect(guest);
 }
 
+// -----------------------------------------------------------------------------
+// Page-heap free-list walk
+// -----------------------------------------------------------------------------
+//
+// sub_82357E48 walks a free list in a heap descriptor and recurses into
+// sub_82357D08 for every entry; sub_82357D08 allocates and calls straight back
+// into sub_82357E48. The pair alternates down the guest stack until it
+// overflows, which is how boot currently ends.
+//
+// Nothing in the recompiled code writes the list head that sub_82357E48 reads,
+// so the values it keeps seeing have to come from the descriptor the CRT
+// built. Reporting them at each visit is what distinguishes "the walk never
+// advances" from "the list is simply very long".
+//
+// Wired up by the HeapFreeListWalk entry in config/recomp/COD3.toml.
+void HeapFreeListWalk(PPCRegister& r30, PPCRegister& r31, PPCRegister& r11)
+{
+    static int depth = 0;
+    static int printed = 0;
+
+    ++depth;
+    if (std::getenv("COD3_TRACE_HEAP_WALK") == nullptr || printed >= 24)
+        return;
+
+    ++printed;
+
+    // r30 indexes a heap-flags table (its values are small - 0x40, 0x50) and
+    // r31 is a large constant, 0x825C7110. The instruction the hook sits on is
+    // `lwzx r11,r30,r31`, which PowerPC computes as [r30 + r31], so the list
+    // head lives at that sum - a static global in .data, not something derived
+    // from r30 as a pointer.
+    const uint32_t headAddr = r30.u32 + r31.u32;
+    const uint32_t head = cod3_load_u32(headAddr);
+
+    std::fprintf(stderr,
+        "[heap-walk] depth=%-4d r30=0x%08X r31=0x%08X head=[0x%08X]=0x%08X\n",
+        depth, r30.u32, r31.u32, headAddr, head);
+
+    if (printed == 24)
+    {
+        std::fprintf(stderr,
+            "[heap-walk] (suppressing further reports; the walk is not "
+            "terminating)\n");
+    }
+}
+
 static void (*g_heap_slot_dumper)() = nullptr;
 
 void cod3_set_heap_slot_dumper(void (*fn)())

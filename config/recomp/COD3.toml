@@ -39,4 +39,24 @@ savegprlr_14_address  = 0x82350A60   # unverified
 restfpr_14_address    = 0x8234F260   # lfd  f14, -0x98(r1)
 savefpr_14_address    = 0x8234F2B0   # stfd f14, -0x98(r1)
 
+# --- Diagnostics -------------------------------------------------------------
+#
+# The page-heap free-list walk in sub_82357E48 recurses without terminating:
+#
+#   0x82357E68  lwzx   r11,r30,r31     ; r31 = 0x825C7110, r30 = descriptor
+#   0x82357E6C  cmpli  r11,0
+#   0x82357E70  bc     <skip>
+#   0x82357E74  bl     sub_82357D08    ; recurse
+#
+# and sub_82357D08 allocates then calls straight back into sub_82357E48. The
+# hook reports the descriptor and the list value at each visit, which is what
+# establishes whether the walk never advances or the recursion is merely deep.
+# Remove once the page heap is known to work.
+[[midasm_hook]]
+name = "HeapFreeListWalk"
+address = 0x82357E74
+registers = ["r30", "r31", "r11"]
+
+
+
 
