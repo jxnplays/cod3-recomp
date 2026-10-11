@@ -869,6 +869,131 @@ PPC_FUNC(__imp__NtFreeVirtualMemory)
 }
 
 // -----------------------------------------------------------------------------
+// Thread local storage
+// -----------------------------------------------------------------------------
+//
+// The CRT allocates TLS slots during boot and stores per-thread values in them.
+// Slots are process-wide indices; the values are per OS thread, because each
+// guest thread runs on its own Win32 thread and TLS is what keeps their state
+// separate.
+//
+// The slot table is stored in guest memory (big-endian) because the guest reads
+// slot indices out of its own TLS directory.
+
+namespace {
+
+constexpr uint32_t kMaxTlsSlots = 64;
+
+// Slot value tables, one per OS thread. Thread-local storage for the runtime
+// itself, keyed by Win32 thread id.
+struct TlsState
+{
+    DWORD threadId = 0;
+    uint32_t values[kMaxTlsSlots] = {};
+};
+
+static TlsState& current_tls()
+{
+    // A small fixed pool avoids pulling in the C++ TLS runtime; the port only
+    // ever has a handful of live guest threads.
+    static TlsState pool[64];
+    static DWORD owner[64] = {};
+
+    const DWORD id = GetCurrentThreadId();
+    int freeSlot = -1;
+
+    for (int i = 0; i < 64; ++i)
+    {
+        if (owner[i] == id)
+            return pool[i];
+        if (owner[i] == 0 && freeSlot < 0)
+            freeSlot = i;
+    }
+
+    // Reuse a slot from a thread that has exited, if we are out of room.
+    if (freeSlot < 0)
+        freeSlot = 0;
+
+    owner[freeSlot] = id;
+    pool[freeSlot] = TlsState{};
+    pool[freeSlot].threadId = id;
+    return pool[freeSlot];
+}
+
+} // namespace
+
+// The CRT keeps a *function pointer* in each TLS slot and calls through it
+// indirectly (verified in sub_82352750: KeTlsGetValue -> mtctr -> bctrl).
+//
+// On hardware the XEX loader installs a real dispatcher at that pointer. For
+// this title the source slot is zero, so an unset slot would be called through
+// address 0. When a slot has no value, hand back the runtime's TLS dispatcher
+// service instead: it reports "not handled" by returning 0, which is what a real
+// dispatcher returns for a slot it does not own, so the CRT takes its normal
+// fallback path rather than jumping to zero.
+
+PPC_FUNC(__imp__KeTlsAlloc)
+{
+    // Returns a slot index, or TLS_OUT_OF_INDEXES (0xFFFFFFFF) on failure.
+    static uint32_t nextSlot = 0;
+
+    const uint32_t slot = nextSlot++;
+    if (slot >= kMaxTlsSlots)
+    {
+        SET_R3(ctx, 0xFFFFFFFFu);
+        return;
+    }
+
+    // Allocate the backing store in guest memory so the guest can read slot
+    // contents directly if it does so.
+    (void)cod3_pool_alloc(0x1000, 'TLS\u0000', 0);
+
+    if (vm_quiet)
+    {
+        std::fprintf(stderr, "[cod3] KeTlsAlloc -> slot %u\n", slot);
+    }
+
+    SET_R3(ctx, slot);
+}
+
+PPC_FUNC(__imp__KeTlsFree)
+{
+    // Slot indices are never recycled; freeing a slot is a no-op here.
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__KeTlsGetValue)
+{
+    const uint32_t slot = ctx.r3.u32;
+    TlsState& tls = current_tls();
+
+    uint32_t value = 0;
+    if (slot < kMaxTlsSlots)
+        value = tls.values[slot];
+
+    // An unset slot must still yield something the guest can call, because the
+    // CRT invokes the result indirectly.
+    if (value == 0)
+        value = cod3_runtime_service_address(Cod3RuntimeService_TlsDispatcher);
+
+    SET_R3(ctx, value);
+}
+
+PPC_FUNC(__imp__KeTlsSetValue)
+{
+    const uint32_t slot = ctx.r3.u32;
+    const uint32_t value = ctx.r4.u32;
+    TlsState& tls = current_tls();
+
+    // Refuse to store the runtime service placeholder back over itself; the
+    // value would otherwise be indistinguishable from a real one.
+    if (slot < kMaxTlsSlots)
+        tls.values[slot] = value;
+
+    ctx.r3.u64 = 0;
+}
+
+// -----------------------------------------------------------------------------
 // Object manager
 // -----------------------------------------------------------------------------
 //

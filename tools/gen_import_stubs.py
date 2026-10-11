@@ -40,6 +40,8 @@ HAND_IMPLEMENTED = {
     # threads
     "ExCreateThread", "KeCreateThread", "KeResumeThread",
     "KeTerminateThread", "KeSetBasePriorityThread", "KeSetPriorityThread",
+    # thread local storage (the CRT allocates slots during boot)
+    "KeTlsAlloc", "KeTlsFree", "KeTlsGetValue", "KeTlsSetValue",
     # object manager
     "ObReferenceObjectByHandle", "ObDereferenceObject",
     "ObDereferenceObjectByPointer", "ObReferenceObjectByPointer",

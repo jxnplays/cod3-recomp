@@ -176,6 +176,21 @@ void cod3_host_display_mode(uint32_t* width, uint32_t* height,
 // the field is genuinely absent from this title.
 bool cod3_xex_header_field(uint32_t field, uint32_t* outValue);
 
+// Runtime service identifiers. These are functions the kernel APIs must return
+// as guest-callable pointers.
+enum
+{
+    Cod3RuntimeService_TlsDispatcher = 0,
+};
+
+// Reserve guest addresses for runtime-supplied functions that kernel APIs hand
+// back to the guest as pointers. Called once during image load.
+void cod3_register_runtime_services();
+
+// Guest address the guest should call for a runtime service, or 0 if the
+// service is unavailable.
+uint32_t cod3_runtime_service_address(int service);
+
 // Publish the loader-populated globals in the title's .rdata that the CRT walks
 // during boot (the XEX loader context chain). Without these the title gives up
 // at the first instruction of heap setup.

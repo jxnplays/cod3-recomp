@@ -55,6 +55,140 @@ static size_t g_heap_size = 0;
 // The low-memory scratch region (null page). See cod3_load_image().
 void* g_low_scratch = nullptr;
 
+// The indirect-call perfect-hash table, placed immediately after the image.
+// See cod3_load_image() for the layout and why it is required.
+static uint32_t g_indirect_table_base = 0;
+static size_t g_indirect_table_size = 0;
+
+// Start of the recompiled code range, matching PPC_CODE_BASE in ppc_config.h.
+// Indirect call targets are keyed relative to this.
+static constexpr uint32_t kCodeBase = 0x820A0000u;
+// End of the recompiled code range, matching PPC_CODE_SIZE.
+static constexpr uint32_t kCodeSize = 0x4FB1B8u;
+
+// Target for indirect calls that resolve to no known function.
+//
+// Gaps in the table would otherwise be called through address 0. Pointing them
+// here turns an inexplicable jump to zero into a report naming the guest
+// address that had no translation.
+static void cod3_unresolved_indirect_report(PPCContext& ctx, uint8_t* base)
+{
+    // Report the first few, then go quiet: a bad indirect call in a dispatch loop
+    // would otherwise flood the log and hide everything else.
+    static int reported = 0;
+    if (reported < 8)
+    {
+        std::fprintf(stderr,
+            "[cod3] indirect call to an address with no recompiled function "
+            "(r3=0x%08X r4=0x%08X r5=0x%08X)\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+        ++reported;
+    }
+    else if (reported == 8)
+    {
+        std::fprintf(stderr,
+            "[cod3] (further unresolved indirect calls suppressed)\n");
+        ++reported;
+    }
+
+    (void)base;
+    ctx.r3.u64 = 0;
+}
+
+PPCFunc* cod3_unresolved_indirect_target = cod3_unresolved_indirect_report;
+
+// -----------------------------------------------------------------------------
+// Runtime service addresses
+// -----------------------------------------------------------------------------
+//
+// Some kernel APIs must hand back a *function pointer* that the guest later
+// calls indirectly. Such a pointer has to be a guest address registered in the
+// indirect-call table, not a host pointer.
+//
+// This allocates a small block of otherwise-unused guest addresses inside the
+// code range and binds them to runtime-supplied implementations. The title
+// occupies ~30k of ~1.27M table slots, so a handful more costs nothing.
+
+enum RuntimeService
+{
+    RuntimeService_TlsDispatcher = 0,
+    RuntimeService_Count,
+};
+
+static uint32_t g_runtime_service_base = 0; // guest address of slot 0
+static bool g_runtime_services_ready = false;
+
+// The TLS dispatcher the CRT calls through when a slot holds no value. It
+// reports "not handled" by returning 0, which is what a real dispatcher returns
+// for a slot it does not own, so the CRT takes its normal fallback path rather
+// than jumping to address 0.
+static void cod3_tls_dispatcher_stub(PPCContext& ctx, uint8_t* base)
+{
+    (void)base;
+    ctx.r3.u64 = 0;
+}
+
+// Reserve `count` consecutive free table slots directly above the highest guest
+// function the title uses, and bind them to the runtime services.
+void cod3_register_runtime_services()
+{
+    if (g_runtime_services_ready || g_indirect_table_size == 0)
+        return;
+
+    auto** table = reinterpret_cast<PPCFunc**>(
+        static_cast<uintptr_t>(g_indirect_table_base));
+    const size_t slots = g_indirect_table_size / sizeof(void*);
+
+    // Find the highest occupied slot; place the services just above it.
+    size_t highestUsed = 0;
+    for (size_t i = 0; i < slots; ++i)
+    {
+        if (table[i] != nullptr &&
+            table[i] != cod3_unresolved_indirect_target)
+        {
+            highestUsed = i;
+        }
+    }
+
+    const size_t first = highestUsed + 64; // small gap for safety
+    if (first + RuntimeService_Count >= slots)
+    {
+        std::fprintf(stderr,
+            "[cod3] no room in the indirect call table for runtime services\n");
+        return;
+    }
+
+    PPCFunc* services[RuntimeService_Count] = {};
+    services[RuntimeService_TlsDispatcher] = cod3_tls_dispatcher_stub;
+
+    for (size_t i = 0; i < RuntimeService_Count; ++i)
+    {
+        table[first + i] = services[i] != nullptr ? services[i]
+                                                  : cod3_unresolved_indirect_target;
+    }
+
+    g_runtime_service_base = kCodeBase +
+                              static_cast<uint32_t>((first) * sizeof(void*));
+    g_runtime_services_ready = true;
+
+    std::fprintf(stderr,
+        "[cod3] runtime services at 0x%08X (table slots %zu..%zu)\n",
+        g_runtime_service_base, first, first + RuntimeService_Count - 1);
+}
+
+// Return the guest address the guest should call for a given runtime service,
+// or 0 if it is unavailable.
+uint32_t cod3_runtime_service_address(int service)
+{
+    if (!g_runtime_services_ready ||
+        service < 0 || service >= RuntimeService_Count)
+    {
+        return 0;
+    }
+    return g_runtime_service_base +
+           static_cast<uint32_t>(service * sizeof(void*));
+}
+
 // Guest addresses of every symbol the XEX exports. Populated by
 // cod3_load_image(); cod3_resolve_private_export() indexes into it by ordinal.
 static std::vector<uint32_t> g_exported_symbols;
@@ -192,20 +326,48 @@ bool cod3_load_image(const char* xex_path)
     // addresses, and the generated code computes base+guest_va in 32-bit
     // arithmetic. The whole reservation MUST therefore stay below 4 GiB.
     //
-    // The image ends at 0x82C98000, so stack+heap must fit in the remaining
-    // space up to 0xC0000000 (well below 0xFFFFFFFF, leaving room for the
-    // title's own high addresses). An earlier build used 64 MiB stack +
-    // 256 MiB heap, which pushed the stack top past 0x80000000; the guest then
-    // saw a wrapped, nonsensical r1 and the CRT faulted on its first store.
+    // Layout, in order:
+    //
+    //   0x82000000  PE image                (SizeOfImage, 0xC98000)
+    //   0x82C98000  indirect call table     (see below)
+    //   .......     guest stack
+    //   .......     guest heap
+    //
+    // INDIRECT CALL TABLE - this is not optional.
+    //
+    // PowerPC has no direct calls; every call goes through a register, so
+    // XenonRecomp resolves indirect calls with a perfect-hash lookup:
+    //
+    //   PPC_LOOKUP_FUNC(x, y) =
+    //     *(PPCFunc**)(x + PPC_IMAGE_BASE + PPC_IMAGE_SIZE
+    //                   + (uint32_t(y) - PPC_CODE_BASE) * 2)
+    //
+    // With base == 0 that table starts at 0x82000000 + 0xC30000 = 0x82C30000
+    // and spans (0x8259B1B8 - 0x820A0000) * 2 = 0x9F6370 bytes, ending at
+    // 0x83626370. It must be present and populated, because the title makes
+    // indirect calls constantly (vtables, jump tables, TLS dispatchers) and
+    // every one of them faults without it.
+    //
+    // The table lives immediately after the image, so it has to be reserved
+    // before the stack and heap are placed.
     constexpr size_t kGuestStackSize = 16 * 1024 * 1024;
-    constexpr size_t kGuestHeapSize = 384 * 1024 * 1024;
+    constexpr size_t kGuestHeapSize = 256 * 1024 * 1024;
 
-    // The image must sit at a 32-byte aligned address; PPC_IMAGE_BASE (0x82000000)
-    // already satisfies that.
+    // Size of the indirect-call perfect-hash table.
+    //
+    // The lookup offsets by (guest - CODE_BASE) * 2 BYTES, and guest addresses
+    // span PPC_CODE_SIZE, so the table is PPC_CODE_SIZE * 2 bytes plus one slot
+    // for the boundary.
+    const size_t indirectTableBase = kGuestImageBase + image_extent;
+    const uint32_t codeBase = kCodeBase;
+    const uint32_t codeSize = kCodeSize;
+    const size_t indirectTableSize =
+        (static_cast<size_t>(codeSize) * 2) + sizeof(void*);
+
     const size_t imageBase = kGuestImageBase;
-    const size_t stackBase = imageBase + image_extent;
+    const size_t stackBase = indirectTableBase + indirectTableSize;
     const size_t heapBase = stackBase + kGuestStackSize;
-    const size_t reserve = image_extent + kGuestStackSize + kGuestHeapSize;
+    const size_t reserve = (heapBase - imageBase) + kGuestHeapSize;
 
     // The whole guest reservation must stay inside the 32-bit address space,
     // because the title addresses it with 32-bit registers. Getting this wrong
@@ -234,10 +396,63 @@ bool cod3_load_image(const char* xex_path)
 
     std::memcpy(mem, image.data.get(), image.size);
 
-    // base == 0 is required: the generated code computes `base + guest_va`, and
-    // guest_va is the full Xbox 360 virtual address (e.g. 0x82BF0000). Only
-    // base == 0 makes that resolve to the byte the guest intended. The image is
-    // mapped at PPC_IMAGE_BASE, so guest VAs and host addresses coincide.
+    // Populate the indirect-call perfect-hash table.
+    //
+    // Every PowerPC call is indirect, so this table is on the hottest path in
+    // the entire port. Each entry is keyed by the guest address:
+    //
+    //   table[(guest - PPC_CODE_BASE) * 2] = host function pointer
+    //
+    // Entries not covered by a known function must point at a trap that reports
+    // the unresolved address, so a bad indirect call is diagnosable instead of
+    // jumping to garbage.
+    {
+        const uintptr_t tableHost =
+            reinterpret_cast<uintptr_t>(indirectTableBase);
+        std::memset(reinterpret_cast<void*>(tableHost), 0, indirectTableSize);
+
+        size_t mapped = 0;
+        for (size_t i = 0; PPCFuncMappings[i].host != nullptr; ++i)
+        {
+            const size_t guest = PPCFuncMappings[i].guest;
+            if (guest < codeBase || guest >= codeBase + codeSize)
+                continue;
+
+            const size_t index = (guest - codeBase) * sizeof(void*);
+            auto** slot = reinterpret_cast<PPCFunc**>(
+                tableHost + index);
+            *slot = PPCFuncMappings[i].host;
+            ++mapped;
+        }
+
+        // Any gap left as null would be called through address 0, so point the
+        // gaps at a trap that reports them.
+        for (size_t offset = 0; offset < indirectTableSize;
+             offset += sizeof(void*))
+        {
+            auto** slot = reinterpret_cast<PPCFunc**>(tableHost + offset);
+            if (*slot == nullptr)
+                *slot = cod3_unresolved_indirect_target;
+        }
+
+        g_indirect_table_base = indirectTableBase;
+        g_indirect_table_size = indirectTableSize;
+
+        std::fprintf(stderr,
+            "[cod3] indirect call table at 0x%08X, 0x%zX bytes, %zu functions "
+            "mapped, %zu gaps trapped\n",
+            static_cast<uint32_t>(indirectTableBase), indirectTableSize, mapped,
+            (indirectTableSize / sizeof(void*)) - mapped);
+
+        // Bind the runtime services the kernel APIs hand back to the guest.
+        cod3_register_runtime_services();
+    }
+
+    // base == 0 is required: the generated code forms every reference as
+    // `base + guest_va`, where guest_va is the full Xbox 360 virtual address
+    // (e.g. 0x82BF0000). Only base == 0 makes that resolve to the byte the
+    // guest intended. The image is mapped at PPC_IMAGE_BASE, so guest VAs and
+    // host addresses coincide.
     //
     // This is safe with the generated prologues: PPC_FUNC_PROLOGUE asserts
     // (base & 0x1F) == 0, which a null base satisfies.
