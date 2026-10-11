@@ -410,6 +410,50 @@ That last one matters more than it looks: no guest thread can start until a stac
 exists, and every `ExCreateThread` and `KeCreateThread` currently fails to
 allocate one.
 
+#### The thread stack signature, narrowed to one call site
+
+Captured rather than guessed. Both stubs read the documented register, so
+guessing a third shape was not an option — that is how the previous two wrong
+answers happened. Logging the link register on the anomalous case names the
+caller exactly.
+
+`ExCreateThread` is called from **`sub_82349768 +0x48`** (`lr = 0x823497B0`), four
+times with `r8` walking `0x82738F00`, `0x82738F1C`, `0x82738F38`, `0x82738F54` —
+a 28-byte stride.
+
+The register setup there:
+
+```asm
+addi r3,r1,80            ; out-pointer for the handle
+mr   r10,r5
+addi r6,r11,-24960       ; a pointer derived from a base
+mr   r8,r6               ; <- arrives in the StackSize slot
+mr   r5,r9
+mr   r7,r10
+```
+
+So `r8` is `r11 - 24960`, where `r11` advances by 28 per call. It is an offset
+into a table, not a length, and the stride is the table entry size.
+
+**What this does not establish**, and it is worth being explicit:
+
+Whether `sub_82349768` is passing arguments in the documented order at all. Two
+readings fit the evidence equally well — the title uses a different argument
+order, or **the import name is mapped to the wrong ordinal** and this call is not
+the function the stub is named after. The second would make the signature
+impossible to fix by adjusting registers, and it is exactly the kind of thing
+that produces several confident wrong answers in a row.
+
+The way to settle it is to compare the import's ordinal against the ordinals of
+its neighbours in the import table, and check what the other imports around it
+expect. That is a check of the import table, not of this call site, so it is
+where the next session should start.
+
+**Why it matters:** no guest thread can start until a stack exists. Every
+`ExCreateThread` currently fails to allocate one, which is the most likely reason
+a run now hangs instead of faulting — the guest is waiting on a thread that never
+starts.
+
 #### What to do next
 
 Two things, in order.

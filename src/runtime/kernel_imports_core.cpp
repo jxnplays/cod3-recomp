@@ -563,6 +563,19 @@ PPC_FUNC(__imp__ExCreateThread)
     const uint32_t startArg = ctx.r7.u32;
     const uint32_t stackSize = (ctx.r8.u32 != 0) ? ctx.r8.u32 : 0x10000;
 
+    // r8 is documented as StackSize and is arriving as an address. The return
+    // address names the call site, which is worth more than another guess at
+    // the signature.
+    if (stackSize >= kGuestImageBase &&
+        stackSize < kGuestImageBase + 0x10000000ull)
+    {
+        std::fprintf(stderr,
+            "[cod3] ExCreateThread: r8 = 0x%08X is an image address, not a "
+            "stack size; caller lr = 0x%08X\n",
+            stackSize, static_cast<uint32_t>(ctx.lr));
+        std::fflush(stderr);
+    }
+
     HANDLE h = create_guest_thread(startRoutine, startArg, stackSize, 1);
     if (outHandle != 0)
         cod3_store_u32(outHandle, GUEST_HANDLE(h));
@@ -574,6 +587,16 @@ PPC_FUNC(__imp__KeCreateThread)
     const uint32_t startRoutine = ctx.r3.u32;
     const uint32_t startArg = ctx.r4.u32;
     const uint32_t stackSize = (ctx.r5.u32 != 0) ? ctx.r5.u32 : 0x10000;
+
+    if (stackSize >= kGuestImageBase &&
+        stackSize < kGuestImageBase + 0x10000000ull)
+    {
+        std::fprintf(stderr,
+            "[cod3] KeCreateThread: r5 = 0x%08X is an image address, not a "
+            "stack size; caller lr = 0x%08X\n",
+            stackSize, static_cast<uint32_t>(ctx.lr));
+        std::fflush(stderr);
+    }
     HANDLE h = create_guest_thread(startRoutine, startArg, stackSize, 0);
     SET_R3(ctx, GUEST_HANDLE(h));
 }
