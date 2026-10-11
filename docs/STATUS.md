@@ -454,6 +454,53 @@ where the next session should start.
 a run now hangs instead of faulting — the guest is waiting on a thread that never
 starts.
 
+#### Thread stacks were being carved from the loader's private region
+
+The hang is gone.
+
+`ExCreateThread` was allocating each guest stack through `cod3_pool_alloc`, which
+bumps the **loader's private 64 KiB region** — a region sized for loader-private
+structures (the CRT thread block, the loader globals chain) and deliberately kept
+separate from the VM carve so the two cannot overlap.
+
+The symptom said it exactly:
+
+```
+loader allocation of 65536 bytes overflows its private 65536 byte region (used 38624)
+```
+
+Five 64 KiB stacks, against a 64 KiB region already 38 KiB used. **Every**
+`ExCreateThread` failed to allocate a stack, no guest thread started, and the
+guest sat waiting on threads that never ran. That was the hang.
+
+`cod3_guest_alloc` now bumps `g_vm_brk`, the guest heap, which begins above the
+loader region and is the correct home for memory the guest reads and writes. The
+loader region was left alone rather than enlarged, because enlarging it would
+re-introduce the overlap the split exists to prevent.
+
+**Result: loader overflows went from 6 per run to 0, and the process exits
+instead of hanging.** It now faults at `0x82344D00` — the title's entry point —
+reading offset `0x10` from a null pointer, with 19 live pool allocations.
+
+#### Assessment: the import mapping is sound
+
+The competing hypothesis for the `ExCreateThread` signature was that the import
+name is bound to the wrong ordinal. **The import table rules it out.** Its
+neighbours are all kernel exports:
+
+```
+KeResumeThread  KeSetBasePriorityThread  ObReferenceObjectByHandle
+ExCreateThread  KeInitializeSemaphore    MmGetPhysicalAddress
+```
+
+So the name and ordinal agree with their surroundings, and the mismatch is in the
+argument order rather than the binding. `KeCreateThread` does not appear in the
+import table at all, so that stub is dead code and can be deleted.
+
+The `sane_stack_size` substitution remains a visible workaround rather than a fix:
+it reports every substitution, so the count in a run says how far the real
+signature is from the documented one.
+
 #### What to do next
 
 Two things, in order.

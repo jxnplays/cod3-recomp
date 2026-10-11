@@ -300,6 +300,10 @@ void cod3_install_heap_methods(uint32_t heap);
 // See src/runtime/kernel_imports_core.cpp for why the loader owns it.
 void cod3_heap_install_lock(uint32_t heap);
 
+// Allocate guest-visible memory from the guest heap bump. Distinct from
+// cod3_heap_alloc, which serves the loader's private 64 KiB region.
+void* cod3_guest_alloc(uint32_t bytes, const char* what);
+
 // Guest MMIO stores. Redirected centrally by tools/patch_ppc_context.py so all
 // eleven sites are captured at once; see src/runtime/gpu_command_processor.cpp.
 void cod3_mmio_store_u32(uint8_t* base, uint32_t addr, uint32_t value);

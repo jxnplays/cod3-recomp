@@ -519,12 +519,57 @@ static DWORD WINAPI guest_thread_trampoline(LPVOID param)
     return static_cast<DWORD>(rc);
 }
 
+// Allocate guest-visible memory from the guest heap.
+//
+// Distinct from cod3_heap_alloc, which bumps the LOADER's private 64 KiB region.
+// That region holds loader-private structures - the CRT thread block, the loader
+// globals chain - and is kept separate from the VM carve precisely so the two
+// cannot overlap.
+//
+// Guest thread stacks are guest-visible and run to hundreds of kilobytes, so
+// putting them in the loader region could never work. Five 64 KiB stacks against
+// a 64 KiB region that was already 38 KiB used meant every ExCreateThread failed
+// to allocate one, no guest thread started, and the guest sat waiting on threads
+// that never ran.
+//
+// The guest heap bump (g_vm_brk) begins above the loader region and is the
+// correct home for memory the guest will read and write.
+void* cod3_guest_alloc(uint32_t bytes, const char* what)
+{
+    if (bytes == 0)
+        bytes = 4;
+
+    // Through the accessor rather than the variable: g_vm_brk is declared
+    // further down this file, and duplicating it here would give the bump
+    // allocator two definitions to keep in step.
+    uint32_t* brk = g_vm_brk_slot();
+    if (*brk == 0)
+        *brk = g_guest_heap_base + kLoaderRegionBytes;
+
+    const uint32_t aligned = (bytes + 0xF) & ~0xFu;
+    const uint32_t addr = *brk;
+    *brk += aligned;
+
+    if (*brk >= g_guest_heap_base + g_guest_heap_size)
+    {
+        std::fprintf(stderr,
+            "[cod3] cod3_guest_alloc: %u bytes for %s exhausts the guest heap\n",
+            bytes, what);
+        std::fflush(stderr);
+        return nullptr;
+    }
+
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(addr));
+}
+
 static HANDLE create_guest_thread(uint32_t startRoutine, uint32_t param,
                                   uint32_t stackSize, uint32_t priority)
 {
-    // Allocate the guest stack out of guest memory.
+    // Allocate the guest stack out of GUEST heap memory, not the loader's
+    // private region - see cod3_guest_alloc for why that distinction is
+    // the difference between a thread starting and the guest hanging.
     auto* stack = static_cast<uint8_t*>(
-        cod3_pool_alloc(stackSize, 'STK\u0000', 0));
+        cod3_guest_alloc(stackSize, "thread stack"));
     if (stack == nullptr)
         return nullptr;
 
@@ -555,26 +600,47 @@ static HANDLE create_guest_thread(uint32_t startRoutine, uint32_t param,
     return h;
 }
 
+// Pick a usable guest stack size.
+//
+// The documented sixth argument to ExCreateThread is StackSize, and it arrives
+// as an ADDRESS: r8 = r11 - 24960, a table offset with a 28-byte stride across
+// calls. Passing it to the allocator asks for gigabytes, so no thread starts and
+// the guest then waits on a thread that never runs.
+//
+// The import mapping is not the cause - ExCreateThread's table neighbours are all
+// kernel exports (KeResumeThread, ObReferenceObjectByHandle,
+// KeInitializeSemaphore, MmGetPhysicalAddress), so the name and ordinal agree
+// with their surroundings. That leaves the argument order, which has not been
+// established and is not guessed at here.
+//
+// So: a size that cannot be a size is replaced by a conventional one, and the
+// substitution is reported. 64 KiB is generous for the CRT's threads.
+constexpr uint32_t kGuestDefaultStack = 0x10000;
+constexpr uint32_t kGuestMaxStack     = 16u * 1024u * 1024u;
+
+uint32_t sane_stack_size(uint32_t size, const char* who, uint32_t lr)
+{
+    if (size != 0 && size <= kGuestMaxStack)
+        return size;
+
+    std::fprintf(stderr,
+        "[cod3] %s: stack size 0x%08X is not a usable length; "
+        "using 0x%X instead (caller lr = 0x%08X)\n",
+        who, size, kGuestDefaultStack, lr);
+    std::fflush(stderr);
+
+    return kGuestDefaultStack;
+}
+
 PPC_FUNC(__imp__ExCreateThread)
 {
     // (outHandle, accessMask, attr, startRoutine, startArg, stackSize, ...)
     const uint32_t outHandle = ctx.r3.u32;
     const uint32_t startRoutine = ctx.r6.u32;
     const uint32_t startArg = ctx.r7.u32;
-    const uint32_t stackSize = (ctx.r8.u32 != 0) ? ctx.r8.u32 : 0x10000;
-
-    // r8 is documented as StackSize and is arriving as an address. The return
-    // address names the call site, which is worth more than another guess at
-    // the signature.
-    if (stackSize >= kGuestImageBase &&
-        stackSize < kGuestImageBase + 0x10000000ull)
-    {
-        std::fprintf(stderr,
-            "[cod3] ExCreateThread: r8 = 0x%08X is an image address, not a "
-            "stack size; caller lr = 0x%08X\n",
-            stackSize, static_cast<uint32_t>(ctx.lr));
-        std::fflush(stderr);
-    }
+    const uint32_t stackSize =
+        sane_stack_size(ctx.r8.u32, "ExCreateThread",
+                        static_cast<uint32_t>(ctx.lr));
 
     HANDLE h = create_guest_thread(startRoutine, startArg, stackSize, 1);
     if (outHandle != 0)
@@ -586,17 +652,9 @@ PPC_FUNC(__imp__KeCreateThread)
 {
     const uint32_t startRoutine = ctx.r3.u32;
     const uint32_t startArg = ctx.r4.u32;
-    const uint32_t stackSize = (ctx.r5.u32 != 0) ? ctx.r5.u32 : 0x10000;
-
-    if (stackSize >= kGuestImageBase &&
-        stackSize < kGuestImageBase + 0x10000000ull)
-    {
-        std::fprintf(stderr,
-            "[cod3] KeCreateThread: r5 = 0x%08X is an image address, not a "
-            "stack size; caller lr = 0x%08X\n",
-            stackSize, static_cast<uint32_t>(ctx.lr));
-        std::fflush(stderr);
-    }
+    const uint32_t stackSize =
+        sane_stack_size(ctx.r5.u32, "KeCreateThread",
+                        static_cast<uint32_t>(ctx.lr));
     HANDLE h = create_guest_thread(startRoutine, startArg, stackSize, 0);
     SET_R3(ctx, GUEST_HANDLE(h));
 }
