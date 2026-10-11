@@ -33,7 +33,42 @@ struct Counters
 {
     unsigned long long d08 = 0;
     unsigned long long e48 = 0;
+
+    // First few entries, for diagnosis. Fixed size so recording costs nothing.
+    uint32_t e48_head[8] = {};
+    uint32_t e48_desc[8] = {};
+    uint32_t e48_index[8] = {};
+
+    // The same for sub_82357D08.
+    uint32_t d08_r29[8] = {};
+    uint32_t d08_head[8] = {};
+
+    // The seeding functions. These are what populate the free list in the first
+    // place: sub_82357BF0 walks the 36-slot table and calls sub_8235B570 on
+    // each empty slot. If they are never entered, the list stays empty and the
+    // D08/E48 pair has no exit condition.
+    unsigned long long bf0 = 0;   // sub_82357BF0 - the table walker
+    unsigned long long b570 = 0;  // sub_8235B570 - the per-slot seeder
+    unsigned long long bf0_r3 = 0;
+    unsigned long long bf0_r30 = 0;
 };
+
+// sub_82357D08 and sub_82357E48 index the same list but with different
+// registers:
+//
+//   sub_82357D00 at 0x82357D4C   rlwinm r29,r29,3,0,28
+//   sub_82357D00 at 0x82357D50   lwzx  r11,r29,r30          r30 = 0x825C7110
+//   sub_82357E48 at 0x82357E90   rlwinm r30,r3,3,0,28
+//   sub_82357E48 at 0x82357E98   lwzx  r11,r30,r31          r31 = 0x825C7110
+//
+// D08 takes its slot index from r29, inherited from its caller. E48 derives it
+// from r3, which D08 sets to 10 at 0x82357D8C (`li r3,10`), giving 10<<3 = 80.
+//
+// If r29 is not 80 the two functions read and write different slots. D08 then
+// pushes its node into a slot E48 never inspects, E48 still sees an empty list,
+// and calls D08 again - forever. That is the shape of the recursion, so both
+// values are recorded rather than the mismatch being inferred from the eventual
+// stack exhaustion.
 
 Counters& counters()
 {
@@ -46,6 +81,12 @@ bool tracing()
     static const bool on = std::getenv("COD3_TRACE_GUEST_ENTRIES") != nullptr;
     return on;
 }
+
+// Note: tracing perturbs this loop. With the per-entry fprintf enabled the
+// walk terminates on the first entry; without it, it runs for ~6,400 levels
+// before the host stack is exhausted. Both are the same guest code path - the
+// output is simply slow enough to change how the host stack is consumed - so
+// per-entry output cannot be used to judge depth. The counters can.
 
 } // namespace
 
@@ -111,11 +152,16 @@ PPC_FUNC(sub_82357D08)
 
     Counters& c = counters();
     ++c.d08;
-    if (tracing() && c.d08 <= 16)
+
+    // Record the slot index D08 derives its head from. At 0x82357D4C the guest
+    // does rlwinm r29,r29,3,0,28, so the head it tests is at
+    // (r29 & ~7) + 0x825C7110 - computed here so it matches what the guest
+    // reads rather than what this override happens to be holding.
+    if (c.d08 <= 8)
     {
-        std::fprintf(stderr,
-            "[entries] sub_82357D08 #%llu  r1=0x%08X r3=0x%08X\n",
-            c.d08, ctx.r1.u32, ctx.r3.u32);
+        const uint32_t slot = (ctx.r29.u32 << 3) & 0xFFFFFFF8u;
+        c.d08_r29[c.d08 - 1] = slot;
+        c.d08_head[c.d08 - 1] = cod3_load_u32(slot + 0x825C7110u);
     }
 
     __imp__sub_82357D08(ctx, base);
@@ -140,20 +186,75 @@ PPC_FUNC(sub_82357E48)
 
     Counters& c = counters();
     ++c.e48;
-    if (tracing() && c.e48 <= 16)
+
+    // Record the list head the walk is about to test, without printing per
+    // entry: printing perturbs the loop badly enough to hide the problem.
+    // Recording a handful of samples is enough to tell whether the head ever
+    // changes.
+    if (c.e48 <= 8)
     {
-        const uint32_t headAddr = ctx.r30.u32 + 0x825C7110u;
-        std::fprintf(stderr,
-            "[entries] sub_82357E48 #%llu  r1=0x%08X r30=0x%08X r3=0x%08X"
-            "  head=[0x%08X]=0x%08X\n",
-            c.e48, ctx.r1.u32, ctx.r30.u32, ctx.r3.u32,
-            headAddr, cod3_load_u32(headAddr));
+        // 0x82357E90 is rlwinm r30,r3,3,0,28 and 0x82357E98 is lwzx
+        // r11,r30,r31 with r31 = 0x825C7110. At function entry r30 has not been
+        // computed yet, so the slot has to be derived from r3 the same way the
+        // guest does, rather than read out of r30.
+        const uint32_t slot = (ctx.r3.u32 << 3) & 0xFFFFFFF8u;
+        c.e48_head[c.e48 - 1] = cod3_load_u32(slot + 0x825C7110u);
+        c.e48_desc[c.e48 - 1] = slot;
+        c.e48_index[c.e48 - 1] = ctx.r3.u32;
     }
 
     __imp__sub_82357E48(ctx, base);
 }
 
 #endif
+
+// -----------------------------------------------------------------------------
+// sub_82357BF0 - the free-list table walker
+// -----------------------------------------------------------------------------
+//
+//   0x82357C0C  addi   r28,r11,-2960      ; r28 = 0x825C5AC0, the descriptor
+//   0x82357C14  lwz    r11,4(r31)         ; slot state
+//   0x82357C18  cmpwi  cr6,r11,1          ; unseeded?
+//   0x82357C24  li     r4,4000
+//   0x82357C34  bl     0x8235b570         ; seed it
+//   0x82357C40  addi   r31,r31,8          ; next slot
+//   0x82357C44  addi   r11,r30,288        ; 36 slots
+//   0x82357C50  blt    cr6,0x82357c14     ; loop
+//
+// This is the only thing that ever puts a node on a list head. Counting it
+// distinguishes "the walker never ran" from "the walker ran but the seeder
+// failed", which are very different bugs and were previously being conflated.
+extern "C" void __imp__sub_82357BF0(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_82357BF0)
+{
+    PPC_FUNC_PROLOGUE();
+
+    Counters& c = counters();
+    ++c.bf0;
+    c.bf0_r3 = ctx.r3.u32;
+    c.bf0_r30 = ctx.r30.u32;
+
+    __imp__sub_82357BF0(ctx, base);
+}
+
+// -----------------------------------------------------------------------------
+// sub_8235B570 - the per-slot seeder
+// -----------------------------------------------------------------------------
+//
+// Reached only from the walker above. Resolves a function pointer on first call,
+// caches it at 0x8291F6A0, then calls through it. Its return value decides
+// whether the walker leaves the slot at 0 (empty) or records the node.
+extern "C" void __imp__sub_8235B570(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_8235B570)
+{
+    PPC_FUNC_PROLOGUE();
+
+    counters().b570++;
+
+    __imp__sub_8235B570(ctx, base);
+}
 
 // Print the totals, so a run that dies mid-recursion still reports its depth.
 void cod3_report_guest_entries()
@@ -163,5 +264,90 @@ void cod3_report_guest_entries()
     {
         std::fprintf(stderr, "[entries] total sub_82357D08 = %llu\n", c.d08);
         std::fprintf(stderr, "[entries] total sub_82357E48 = %llu\n", c.e48);
+
+        for (unsigned i = 0; i < 8 && i < c.e48; ++i)
+        {
+            std::fprintf(stderr,
+                "[entries]   E48 #%u index=0x%08X (slot 0x%08X) head=0x%08X\n",
+                i + 1, c.e48_index[i], c.e48_index[i] << 3, c.e48_head[i]);
+        }
+
+        // D08's slot index comes from its caller's r29, not from r3. If this
+        // differs from E48's 0x50, the two functions are working on different
+        // slots and neither can ever see what the other wrote.
+        std::fprintf(stderr,
+            "[entries]   E48 uses slot 0x%08X (r3=10 << 3)\n",
+            10u << 3);
+
+        // -----------------------------------------------------------------------------
+// What this establishes, measured rather than inferred
+// -----------------------------------------------------------------------------
+//
+// Boot ends with ~6,415 mutual entries into sub_82357D08 and sub_82357E48 - one
+// level each, exactly balanced - until the host stack is exhausted.
+//
+// D08 and E48 walk size-class slot 0x50 of the CRT heap free-list table at
+// 0x825C7110:
+//
+//   0x82357D50  lwzx  r11,r29,r30     D08: r30 = 0x825C7110, r29 = caller slot
+//   0x82357E98  lwzx  r11,r30,r31     E48: r31 = 0x825C7110, r30 = r3 << 3
+//
+// They agree on the slot: E48 is entered with r3 = 10 giving r30 = 0x50, and D08
+// with r29 = 0x50. An earlier hypothesis that they disagreed - each deriving
+// its own index - is disproved by the recorded values. Both read head = 0 on
+// every one of the 6,415 entries.
+//
+// The crash stack shows where the pair is entered from, and this is the part
+// that was wrong before:
+//
+//     #6  sub_823478F0
+//     #7  sub_823510B0    <- the allocator
+//     #8  sub_82357D00
+//     #9  sub_82357E44
+//    #10  sub_82357D00
+//    #11  sub_82357E44    ... 96 frames
+//
+// So the recursion is not the free-list walk finding an unterminated list. It is
+// the allocator sub_823510B0 failing to terminate, and the D08/E48 pair is what
+// it is failing inside. At 0x82351108 it calls sub_823478F0 to get memory and
+// at 0x823510D0 calls sub_82348d78; one of those is handing back control into
+// the very code that asked for memory.
+//
+// The list itself is never seeded, which is a separate and real defect:
+// sub_82357BF0 is the only function that seeds those slots (it walks 36 of
+// them, 0x82357C40 addi r31,r31,8 through 0x82357C44 addi r11,r30,288, calling
+// sub_8235B570 on each whose state is 1). Both counters read zero, so neither
+// runs. Its single call site is sub_82352998 at 0x82352A08, gated on
+// KeTlsAlloc at 0x823529E0 and KeTlsSetValue at 0x823529F8, and tracing both
+// return addresses (COD3_TRACE_LR) produces nothing, so that function is not
+// reached during boot either.
+//
+// Note the return addresses are the ones after the call, so the KeTlsAlloc site
+// traces at lr=0x823529E8, not 0x823529E0. Pointing the tracer at the
+// instruction address silently reports "never called" for a call that happens on
+// every iteration - a mistake that briefly looked like a dead end.
+//
+// Two distinct bugs, both real, neither yet fixed:
+//
+//   1. sub_823510B0 (allocator) recurses instead of returning. This is what
+//      ends boot.
+//   2. The free-list seeding pass (sub_82357BF0) never runs, so size-class 10
+//      stays empty.
+//
+// (1) is the blocker. Fixing (2) alone would not make boot complete.
+
+        for (unsigned i = 0; i < 8 && i < c.d08; ++i)
+        {
+            std::fprintf(stderr,
+                "[entries]   D08 #%u slot=0x%08X head=0x%08X\n",
+                i + 1, c.d08_r29[i], c.d08_head[i]);
+        }
+
+        // The seeding side. If the walker never ran, the list is empty because
+        // nothing ever populated it, and the D08/E48 recursion has no exit.
+        std::fprintf(stderr,
+            "[entries] seeding: sub_82357BF0 = %llu (r3=0x%08X r30=0x%08X),"
+            " sub_8235B570 = %llu\n",
+            c.bf0, c.bf0_r3, c.bf0_r30, c.b570);
     }
 }

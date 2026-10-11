@@ -44,6 +44,18 @@ def load_segments(img):
 
 
 def decode(ins, pc):
+    """Decode one guest instruction.
+
+    Kept deliberately small. A full decoder was tried and produced three wrong
+    answers that each sent debugging in the wrong direction - opcode 21 covers
+    add, subf, neg, cmpw, cmplw, cntlzw, slw and sraw depending on the extended
+    opcode and the S bit, so guessing at it is not safe.
+
+    Where this is unsure it says so. The authoritative text for any address is
+    the `// <mnemonic>` comment XenonRecomp emitted above the corresponding line
+    in build/ppc/ppc_recomp.*.cpp - that is the same decoder that produced the
+    code actually running, so prefer it.
+    """
     op = ins >> 26
     rt = (ins >> 21) & 0x1F
     ra = (ins >> 16) & 0x1F

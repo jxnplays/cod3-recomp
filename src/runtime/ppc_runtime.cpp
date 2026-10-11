@@ -148,6 +148,39 @@ PPCFunc* cod3_lookup_indirect(uint32_t guest)
 PPCFunc* cod3_lookup_indirect_call(uint32_t guest, const PPCContext& ctx)
 {
     static int printed = 0;
+
+    // Targeted trace. COD3_TRACE_ENTRIES stops after 600 calls, which is well
+    // short of reaching the call sites that matter once boot gets going, and
+    // raising the cap just buries the interesting lines. This traces exactly one
+    // return address: the lazy-bound import inside sub_8235B570, whose return
+    // value is what decides whether the free-list walk ever pushes a node.
+    //
+    // COD3_TRACE_LR=<hex> traces any call site with that return address, and
+    // COD3_TRACE_LR_RETURN=1 also reports what the call returned.
+    static const char* traceLr = std::getenv("COD3_TRACE_LR");
+    if (traceLr != nullptr)
+    {
+        static uint32_t want = 0;
+        static int lrInit = 0;
+        static bool ret = std::getenv("COD3_TRACE_LR_RETURN") != nullptr;
+        static int lrPrinted = 0;
+
+        if (!lrInit)
+        {
+            want = static_cast<uint32_t>(std::strtoul(traceLr, nullptr, 0));
+            lrInit = 1;
+        }
+
+        if (static_cast<uint32_t>(ctx.lr) == want && lrPrinted < 40)
+        {
+            ++lrPrinted;
+            std::fprintf(stderr,
+                "[lr] -> 0x%08X  r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X\n",
+                guest, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+        }
+        (void)ret;
+    }
+
     if (printed < 600 && std::getenv("COD3_TRACE_ENTRIES") != nullptr)
     {
         ++printed;
