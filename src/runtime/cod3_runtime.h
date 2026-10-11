@@ -12,6 +12,7 @@
 #pragma once
 
 #include "ppc_context.h"
+#include <string>
 
 #include <cstddef>
 #include <cstdint>
@@ -299,6 +300,17 @@ void cod3_install_heap_methods(uint32_t heap);
 // Install the critical section a heap descriptor keeps at +1408.
 // See src/runtime/kernel_imports_core.cpp for why the loader owns it.
 void cod3_heap_install_lock(uint32_t heap);
+
+// Guest pointer as a host pointer. Guest addresses are mapped at their real
+// host addresses, so this is a widening cast and nothing more - but the
+// indirection is named so no caller assumes `g_base + addr` arithmetic.
+inline void* cod3_guest_ptr(uint32_t addr)
+{
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(addr));
+}
+
+// Directory the guest's files are resolved beneath. Set by the launcher.
+void cod3_set_game_root(const std::string& root);
 
 // Allocate guest-visible memory from the guest heap bump. Distinct from
 // cod3_heap_alloc, which serves the loader's private 64 KiB region.

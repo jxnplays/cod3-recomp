@@ -25,6 +25,11 @@ HAND_IMPLEMENTED = {
     # memory
     "ExAllocatePool", "ExAllocatePoolWithTag", "ExAllocatePoolTypeWithTag",
     "ExFreePool",
+    # NT file I/O. Without these the title cannot load a single asset, so
+    # they are the critical path to anything being visible at all. Signatures
+    # were measured from the call sites, not assumed.
+    "NtCreateFile", "NtClose", "NtReadFile", "NtWriteFile",
+    "NtFlushBuffersFile", "NtQueryInformationFile", "NtSetInformationFile",
     # critical sections
     "RtlInitializeCriticalSection", "RtlInitializeCriticalSectionAndSpinCount",
     "RtlEnterCriticalSection", "RtlLeaveCriticalSection",

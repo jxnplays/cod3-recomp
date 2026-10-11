@@ -319,6 +319,10 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------------
     const std::string wanted = multiplayer ? kMultiplayerXex : kDefaultXex;
 
+    // Guest file paths resolve beneath the directory the launcher resolved,
+    // so the guest sees its own game tree rather than the host filesystem.
+    cod3_set_game_root(gameDir);
+
     std::string xexPath = locate_xex(xexOverride, gameDir, wanted);
 
     if (xexPath.empty())
