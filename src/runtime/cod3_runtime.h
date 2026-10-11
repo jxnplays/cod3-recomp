@@ -170,6 +170,12 @@ bool cod3_attribute_host_pc(const void* pc, uint32_t* guest, uint64_t* distance)
 // saved link register can be recovered from a host stack frame.
 void cod3_record_frame_size(uint32_t guest, int32_t size);
 
+// Reserve a thread-local slot, or return 0xFFFFFFFF when the pool is full.
+//
+// Exposed so the runtime can reserve the CRT's own slot at load time rather
+// than only when the title happens to call KeTlsAlloc.
+uint32_t cod3_reserve_tls_slot();
+
 // Resolve a private export ordinal (>= 0x10000) against the recompiled function
 // table, returning the guest virtual address of the target, or 0 if unknown.
 // The Xbox 360 title resolves its own statically linked modules this way.

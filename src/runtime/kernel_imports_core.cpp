@@ -932,13 +932,29 @@ static TlsState& current_tls()
 // dispatcher returns for a slot it does not own, so the CRT takes its normal
 // fallback path rather than jumping to zero.
 
+// Reserve a thread-local slot without going through a guest call.
+//
+// KeTlsAlloc below uses this too, so both paths share one counter and cannot
+// hand out the same index. The runtime calls it at load time to publish the
+// CRT's own slot, which the title expects the kernel to have created.
+uint32_t cod3_reserve_tls_slot()
+{
+    static uint32_t nextSlot = 0;
+    if (nextSlot >= kMaxTlsSlots)
+        return 0xFFFFFFFFu; // TLS_OUT_OF_INDEXES
+
+    // Allocate the backing store in guest memory so the guest can read slot
+    // contents directly if it does so.
+    (void)cod3_pool_alloc(0x1000, 'TLS', 0);
+
+    return nextSlot++;
+}
+
 PPC_FUNC(__imp__KeTlsAlloc)
 {
     // Returns a slot index, or TLS_OUT_OF_INDEXES (0xFFFFFFFF) on failure.
-    static uint32_t nextSlot = 0;
-
-    const uint32_t slot = nextSlot++;
-    if (slot >= kMaxTlsSlots)
+    const uint32_t slot = cod3_reserve_tls_slot();
+    if (slot == 0xFFFFFFFFu)
     {
         SET_R3(ctx, 0xFFFFFFFFu);
         return;

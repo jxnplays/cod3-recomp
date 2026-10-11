@@ -1043,6 +1043,40 @@ bool cod3_load_image(const char* xex_path)
     // Publish the loader-populated globals the CRT walks during boot.
     cod3_populate_loader_globals();
 
+    // The CRT keeps its TLS slot number and its per-thread error record
+    // pointer in globals that are 0xFFFFFFFF and 0 respectively in the shipped
+    // image, and nothing the title runs writes them. sub_82352690 does:
+    //
+    //     r3 = [0x825C6E38]              ; TLS slot
+    //     bl  KeTlsGetValue
+    //     bne <have a value>
+    //     r4 = [0x8291F6C4]              ; default error record
+    //     bl  KeTlsSetValue
+    //
+    // With the slot reading 0xFFFFFFFF every call fails, so no thread ever
+    // gets a value, and sub_8234F378 later returns base+8 of a record that
+    // does not exist - which is where the fault address 0x48 comes from.
+    //
+    // Reserving the slot is a job the Xbox 360 kernel does at thread creation,
+    // so it belongs here rather than in a kernel import.
+    {
+        constexpr uint32_t kCrtTlsSlotNumber = 0x825C6E38u;
+        constexpr uint32_t kCrtErrorRecord = 0x8291F6C4u;
+
+        const uint32_t slot = cod3_reserve_tls_slot();
+        cod3_store_u32(kCrtTlsSlotNumber, slot);
+
+        // The default record is a pair of dwords the CRT writes error codes
+        // into; it lives in .data and is already zero, which is a valid
+        // "no error" state, so nothing more is needed for it.
+        (void)kCrtErrorRecord;
+
+        std::fprintf(stderr,
+            "[cod3] CRT thread-local slot reserved: index %u "
+            "(published at 0x%08X)\n",
+            slot, kCrtTlsSlotNumber);
+    }
+
     // Dump the heap method-table slots the CRT consults while allocating. They
     // decide whether the allocator's retry loop terminates, so being able to
     // read them at fault time is worth more than re-deriving the addresses.
