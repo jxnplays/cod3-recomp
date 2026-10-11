@@ -99,6 +99,8 @@ unsigned long long skips = 0;
 // It is deliberately conservative. Skipping is reported and recoverable;
 // faulting is neither. When this is wrong it will skip work that should have
 // run, and the skip count is printed at the end precisely so that is visible.
+bool block_walkable(uint32_t block);
+
 bool region_unwalkable(uint32_t region)
 {
     if (!tolerate())
@@ -108,25 +110,50 @@ bool region_unwalkable(uint32_t region)
         region >= g_guest_heap_base + g_guest_heap_size)
         return true;
 
-    const uint32_t count = (cod3_load_u32(region) >> 16) & 0xFFFFu;
-    if (count == 0)
-        return true;
+    return !block_walkable(region);
+}
 
-    const uint32_t rotated = (count << 4) | (count >> 12);
-    const uint32_t block = region - rotated;
+// -----------------------------------------------------------------------------
+// block_walkable
+// -----------------------------------------------------------------------------
+//
+// The block header, and the exact form the guest reads it in. sub_823460D8 does
+// the following, and this must agree with it exactly or the guard rejects
+// perfectly good blocks:
+//
+//     lhz    r11,2(r30)      <- LOW half of the big-endian word at +0
+//     rotlwi r11,r11,4       <- x16
+//     subf   r31,r11,r30     <- r31 = r30 - size
+//
+// The guard used to read `>> 16`, which is the HIGH half - bytes 0 and 1. That
+// was harmless while block headers were uninitialised, because both halves read
+// as garbage either way. Once the grow method started writing real headers it
+// became actively harmful: the high half is zero, the guard concluded the size
+// was zero, and it began skipping blocks that were perfectly walkable. Boot got
+// worse for a fix that was supposed to make it better.
+//
+// Read the low half, the same half the guest reads.
+bool block_walkable(uint32_t block)
+{
+    const uint32_t units = cod3_load_u32(block) & 0xFFFFu;
+    if (units == 0)
+        return false;
 
-    return block < region ||
-           block < g_guest_heap_base ||
-           block >= g_guest_heap_base + g_guest_heap_size;
+    const uint32_t size = units << 4;
+    const uint32_t prev = block - size;
+
+    return prev < block &&
+           prev >= g_guest_heap_base &&
+           prev < g_guest_heap_base + g_guest_heap_size;
 }
 
 void note_skip(const char* fn, uint32_t region)
 {
     if (++skips <= 16 || (skips % 1000) == 0)
     {
-        const uint32_t count = (cod3_load_u32(region) >> 16) & 0xFFFFu;
+        const uint32_t count = cod3_load_u32(region) & 0xFFFFu;
         std::fprintf(stderr,
-            "[cod3] heap: skipping %s #%llu (region 0x%08X, count 0x%04X)\n",
+            "[cod3] heap: skipping %s #%llu (block 0x%08X, size 0x%04X units)\n",
             fn, skips, region, count);
         std::fflush(stderr);
     }
@@ -134,59 +161,17 @@ void note_skip(const char* fn, uint32_t region)
 
 extern "C" void __imp__sub_823460D8(PPCContext& __restrict ctx, uint8_t* base);
 
+extern "C" void __imp__sub_823460D8(PPCContext& __restrict ctx, uint8_t* base);
+
 PPC_FUNC(sub_823460D8)
 {
     PPC_FUNC_PROLOGUE();
 
-    if (tolerate())
+    if (region_unwalkable(ctx.r4.u32))
     {
-        const uint32_t r30 = ctx.r30.u32;
-        const uint32_t half = (cod3_load_u32(r30) >> 16) & 0xFFFFu;
-        const uint32_t rotated = (half << 4) | (half >> 12);
-        const uint32_t r31 = r30 - rotated;
-
-        // A first attempt guarded only r31, the walked block. That was too narrow:
-        // the fault moved to a different register and to address 0x2, a small
-        // integer rather than a heap address. While the region header is wrong,
-        // anything derived from it can be wrong, so guard the whole call on the
-        // header itself rather than on one computed value.
-        //
-        // Plausibility, checked in this order:
-        //
-        //   - r30 must be inside the guest heap. It is a region the CRT carved.
-        //   - the block count must be non-zero, or the region is empty and there
-        //     is nothing to walk.
-        //   - the walk must stay inside the region: a block below the region base
-        //     is outside memory the region owns.
-        //
-        // The region extent is not known here - the caller allocated it and this
-        // function only sees the header - so "inside the region" is approximated
-        // by "inside the heap and above the region". That is deliberately
-        // conservative: it skips more rather than less, because a skip is
-        // reported and a crash is not.
-        const bool r30Ok = r30 >= g_guest_heap_base &&
-                           r30 < g_guest_heap_base + g_guest_heap_size;
-        const bool walkOk = rotated != 0 && r31 >= r30 &&
-                            r31 >= g_guest_heap_base &&
-                            r31 < g_guest_heap_base + g_guest_heap_size;
-
-        if (!r30Ok || !walkOk)
-        {
-            if (++skips <= 16 || (skips % 1000) == 0)
-            {
-                std::fprintf(stderr,
-                    "[cod3] heap: skipping sub_823460D8 #%llu"
-                    " (region 0x%08X r30Ok=%d, block 0x%08X walkOk=%d,"
-                    " count=0x%04X)\n",
-                    skips, r30, r30Ok ? 1 : 0, r31, walkOk ? 1 : 0, half);
-                std::fflush(stderr);
-            }
-
-            // Report failure the way the CRT expects: a null block. Callers
-            // already test for it.
-            ctx.r3.u64 = 0;
-            return;
-        }
+        note_skip("sub_823460D8", ctx.r4.u32);
+        ctx.r3.u64 = 0;
+        return;
     }
 
     __imp__sub_823460D8(ctx, base);
@@ -304,3 +289,5 @@ PPC_FUNC(sub_82345E48)
 
     __imp__sub_82345E48(ctx, base);
 }
+
+// -----------------------------------------------------------------------------

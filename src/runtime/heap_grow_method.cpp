@@ -132,12 +132,20 @@ void cod3_heap_grow(PPCContext& __restrict ctx, uint8_t* base)
 
     // The block header - the initialisation the fallback path omits.
 
-    // +0: size in 16-byte units, as a halfword. There is no 16-bit store helper
-    // and the word helper is big-endian, so the value is placed in the upper half
-    // where a big-endian halfword at offset 0 lives.
+    // Size in 16-byte units, read by sub_823460D8 as `lhz r11,2(r30)`.
+    //
+    // That is the LOW half of the big-endian word at +0, not the high one. The
+    // word helper is big-endian, so the value goes in bits 0..15 and the upper
+    // half is left alone - it belongs to whatever else lives in that word.
+    //
+    // This was wrong at first: the units were written to the high half, so the
+    // walk read a size of zero, computed r31 = r30 - 0, and examined the block
+    // header as though it were its own predecessor. That is not a subtle
+    // degradation - it walks the list in the wrong direction entirely.
     const uint32_t units = total >> 4;
+    const uint32_t sizeWord = cod3_load_u32(block + kBlockSizeUnitsOffset);
     cod3_store_u32(block + kBlockSizeUnitsOffset,
-                   (units << 16) & 0xFFFF0000u);
+                   (sizeWord & 0xFFFF0000u) | (units & 0xFFFFu));
 
     // +5: a flags byte - bit 0 "in use", bit 4 set by sub_823478F0 on free. A
     // freshly carved block is in use and not free. Byte 5 is byte index 1 of the
