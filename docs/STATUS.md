@@ -228,64 +228,68 @@ Nothing in this repository pretends to work when it does not:
 
 ## Ordered path to a playable build
 
-1. **Resolve the 92 unresolved branch targets.** This is the single largest
-   blocker, and it is much smaller than it first appears. XenonRecomp emitted
-   `ERROR <addr>` for 9,270 branches, but those collapse to only **92 distinct
-   target addresses**, and **8,383 of the 9,270 (90%) fall in one 64-byte
-   region at `0x8234F2B4`-`0x8234F2EC`.**
+1. **Break the `sub_82357E48` / `sub_82357D08` recursion.** This is where boot
+   ends now: a stack overflow, exhaustively. The pair alternates down the guest
+   stack, confirmed by the call stack repeating those two frames to the bottom.
 
-   That region is the tail of the CRT's non-volatile register helper, which
-   begins at **`0x8234F21C`** (`stwu r1,-112(r1)`) and runs to `0x8234F308`.
-   It is ordinary, decodable PowerPC - stack-pointer restore, `lwz`/`stw`
-   spills on `r1`, `stfd`/`lfd` of `f30`/`f31`, the `mtspr` family
-   (`0x7FC3F378` = `mtlr r30`, which occurs 3,342 times across `.text`, so it
-   is a pervasive valid instruction and not corrupted data), and `blr`:
+   What is known:
+
+   - `sub_823478F0`, the page heap allocator, is entered exactly **three** times
+     (sizes 0x80, 0x580, 0x800, descriptor 0x84698000) and is not part of the
+     loop. `COD3_TRACE_HEAP_ALLOC=1` reports it.
+   - The cycle does not pass through the list-seeding code. Hooks at
+     `0x82357D44`, `0x82357D98`, `0x8235B570` and `0x82357DD8` all stay silent
+     while the control hook at `0x823478F0` fires, so their silence is a real
+     absence and not a broken hook.
+   - The CRT's thread-local slot is now reserved at load
+     (`cod3_reserve_tls_slot`), which removed the `0x48` fault. Before that,
+     `0x825C6E38` read `0xFFFFFFFF`, so `KeTlsGetValue` always failed and the
+     CRT never had a per-thread error record.
+
+   The next step is to establish what `sub_82357D08` does on the path it is
+   actually taking, since the paths already examined are not being executed.
+
+2. **The remaining 184 unresolved branches.** Down from 9,270. The single
+   largest cause was the `savefpr_14`/`restfpr_14` helper addresses in
+   `config/recomp/COD3.toml`, which were wrong: `0x82350A60`, declared as
+   `savegprlr_14`, decodes as `addi r11,r0,4`. The real helpers are
 
    ```
-   0x8234F2B0: 807F0050  lwz   r3,80(r31)
-   0x8234F2B4: 383F0070  addi  r1,r31,112
-   0x8234F2B8: 8181FFF8  lwz   r12,-8(r1)
-   0x8234F2BC: 7D8803A6  mtlr  r12
-   0x8234F2C0: EBC1FFE8  stfd  f30,-24(r1)
-   0x8234F2C4: EBE1FFF0  stfd  f31,-16(r1)
-   0x8234F2C8: 4E800020  blr
+   restfpr_14 = 0x8234F260   lfd  f14,-152(r1) .. lfd  f31,-16(r1), blr
+   savefpr_14 = 0x8234F2B0   stfd f14,-152(r1) .. stfd f31,-16(r1), blr
    ```
 
-   XenonRecomp cannot resolve branches into this region and truncates the
-   calling function at that point, which is why functions like `sub_823478F0`
-   (the CRT heap allocator) simply stop mid-body.
+   and fixing those two lines took the count from 9,270 to 184. Measured
+   conventions for this title: the link register is **r12** (`mflr r12` occurs
+   10,518 times, `mflr r0` twice), and there is **no `lvx`/`stvx`** at all - the
+   vector helpers are spelled `lfdup`/`stfdup`, so the VMX entries are unset.
 
-   **Note:** earlier drafts of this document claimed the `0x8234F2xx` bytes were
-   encrypted `.text`. That was wrong - they are valid instructions, misdecoded
-   by hand. `tools/find_reg_helpers.py` reports coverage against the real
-   unresolved-branch set; it currently matches none, which is expected because
-   the signature it looks for is the *whole* helper rather than its tail.
-2. **Finish the loader context graph.** The CRT walks a descriptor chain the
+3. **Finish the loader context graph.** The CRT walks a descriptor chain the
    Xbox 360 XEX loader populates before the entry point. The first links are
    published; the 48-byte vtable and its dispatch entries are not. The
    diagnostics above identify the exact call sites, and `cod3_populate_loader_globals`
    is the single place to extend. *Smallest step with the largest gain.*
-3. **Implement the 14 VMX helpers.** Each is a single PowerPC instruction with a
+4. **Implement the 14 VMX helpers.** Each is a single PowerPC instruction with a
    known semantic; they can be written directly against the reference
    instruction descriptions and validated in isolation.
-4. **Work the import trace.** Each time the port gets further, the trace shows
+5. **Work the import trace.** Each time the port gets further, the trace shows
    the next unimplemented API. Pool allocation, IRQL, sync objects, threads, TLS,
    virtual memory and XEX headers are done; XAM licensing, storage, input and
    networking are not.
-5. **Intercept NGL and drive real D3D9.** This replaces an earlier assumption that
+6. **Intercept NGL and drive real D3D9.** This replaces an earlier assumption that
    the Xenos command processor had to be emulated. It does not: the title calls
    into the graphics stack through COM-style method tables (211 vtable-like tables
    were measured in `.rdata`), above the point where anything becomes Xenos-
    specific. Intercepting the flush points - `Draw*`, `Clear`, `Resolve`, present -
    and translating the guest's state onto a real `IDirect3DDevice9` avoids the
    command processor entirely. See [GRAPHICS.md](GRAPHICS.md).
-6. **Solve shader translation.** Xenos bytecode to DXBC. This is the dominant
+7. **Solve shader translation.** Xenos bytecode to DXBC. This is the dominant
    remaining graphics cost, but it is a bounded compiler problem rather than a
    hardware emulator.
-7. **Fix the jump table detections** once the boot path is far enough in to hit
+8. **Fix the jump table detections** once the boot path is far enough in to hit
    the affected regions.
 
-Items 2-4 are ordinary runtime engineering. Items 5-6 are substantial but
+Items 2-5 are ordinary runtime engineering. Items 6-7 are substantial but
 bounded, and notably not a GPU emulator.
 
 ---
