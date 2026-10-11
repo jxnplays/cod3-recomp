@@ -22,7 +22,7 @@ understood, and is documented below — it is not a toolchain problem.
 | Loads the real guest image | **Done** | Mapped at its real VA `0x82000000`, base = 0 |
 | Runs the title's boot path | **Done** | Executes the CRT, calls kernel APIs, completes allocations |
 | Virtual memory manager | **Done** | `NtAllocateVirtualMemory` returns real, backed guest memory |
-| Xbox 360 kernel API layer | **Partial** | 31 hand-written, 148 generated stubs, 179 total |
+| Xbox 360 kernel API layer | **Partial** | 32 hand-written, 147 generated stubs, 179 total |
 | Crash attribution | **Done** | Faults map back to exact guest addresses and validity |
 | CRT page-heap initialisation | **In progress** | Faults at a low address during page heap setup |
 | **Renders the game** | **Not working** | See below |
@@ -35,7 +35,7 @@ understood, and is documented below — it is not a toolchain problem.
 
 [cod3] entering recompiled entry point 0x82344D00
 [cod3] NtAllocateVirtualMemory: flags=0x60002000 size=0x1000 -> 0x83CA0000
-[cod3] NtAllocateVirtualMemory: flags=0x60001000 size=0x1000 -> 0x83CA0000
+[cod3] NtAllocateVirtualMemory: flags=0x60001000 size=0x1000 -> 0x83CA1000
 
 [cod3] FATAL: access violation (0xC0000005)
 [cod3]   guest addr  : 0x82347340  (sub_82347340, +3376 bytes)
@@ -43,8 +43,20 @@ understood, and is documented below — it is not a toolchain problem.
 [cod3]   write of address 0x000000000000CACF
 ```
 
-The port executes the title's real boot path, calls into the kernel, gets
-successful allocations back, and faults later in the CRT's page-heap setup.
+The port executes the title's real boot path, calls into the kernel, gets two
+distinct successful allocations back, and faults later in the CRT's page heap
+setup. The exact faulting instruction is:
+
+```asm
+lwz  r11,80(r31)     ; r11 = heap descriptor base  (should be a guest pointer)
+addi r11,r11,384     ; r11 += 0x180
+addic. r10,r10,-1    ; unrolled 128-iteration loop
+stw  r11,0(r11)      ; <-- fault: writes through r11
+```
+
+`r11` holds `0xCA43`, i.e. a small value where a guest virtual address belongs.
+That slot is written earlier by `stw r22,80(r31)` from `sub_8234EBA0`, so the
+descriptor originates there rather than from the virtual memory calls.
 
 ---
 
@@ -87,11 +99,14 @@ This is the Xbox 360 **page heap** (`XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS`), whic
 the kernel sets up before the title starts rather than the title building itself.
 Getting there needs:
 
-1. The XEX optional headers exposed to the guest — `XEX_HEADER_TLS_INFO` is
-   `0x1558` here and `XEX_HEADER_DEFAULT_HEAP_SIZE` is `0`, so the CRT is reading
-   a heap descriptor the runtime has not populated.
-2. `XexGetXEntryInfo` implemented for real, so the CRT can discover the page
-   heap it is entitled to.
+1. `XexGetXEntryInfo` implemented for real. It is currently a stub returning 0,
+   so the CRT cannot read the XEX optional headers it needs — `XEX_HEADER_TLS_INFO`
+   is `0x1558` here, `XEX_HEADER_DEFAULT_HEAP_SIZE` is `0`, and
+   `XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS` was never surfaced at all.
+2. Understanding `sub_8234EBA0`, which populates the descriptor that
+   `[r31+80]` is copied from. It receives the allocation results as arguments,
+   so it most likely interprets them against a page heap layout the runtime has
+   not established.
 
 This is the current frontier: the port boots, allocates, and dies in CRT setup.
 

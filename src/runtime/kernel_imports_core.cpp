@@ -601,6 +601,16 @@ PPC_FUNC(__imp__KeSetPriorityThread)
 
 static uint32_t g_vm_brk = 0; // next free guest VA, 0 until first allocation
 
+// Live regions, so a new allocation never overlaps one already handed out.
+// The title stores these addresses in long-lived descriptors, so handing back
+// the same address twice corrupts them silently and much later.
+struct VmRegion
+{
+    uint32_t base;
+    uint32_t end;
+};
+static std::vector<VmRegion> g_vm_regions;
+
 PPC_FUNC(__imp__NtAllocateVirtualMemory)
 {
     // r3 points at a caller slot holding the requested BaseAddress, and we write
@@ -650,17 +660,56 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
         (pBaseSlot != nullptr && *pBaseSlot != 0) ? *pBaseSlot : 0u;
     const uint32_t heapEnd = g_guest_heap_base + g_guest_heap_size;
 
-    // Prefer the caller's requested address when it lies inside the arena; the
-    // CRT does reserve specific regions.
-    uint32_t addr;
+    // Honour a requested address only if it is inside the arena AND no live
+    // region already covers it. Reusing a live address hands the title two
+    // overlapping objects, which shows up much later as a descriptor whose
+    // fields have been overwritten by a different allocation.
+    uint32_t addr = 0;
+    bool fromRequest = false;
+
     if (requestedBase >= g_guest_heap_base &&
         static_cast<uint32_t>(requestedBase + size) <= heapEnd)
     {
-        addr = requestedBase;
+        bool overlaps = false;
+        for (const auto& r : g_vm_regions)
+        {
+            if (requestedBase < r.end && r.base < requestedBase + size)
+            {
+                overlaps = true;
+                break;
+            }
+        }
+
+        if (!overlaps)
+        {
+            addr = requestedBase;
+            fromRequest = true;
+        }
     }
-    else
+
+    if (addr == 0)
     {
-        addr = (g_vm_brk + 0xFFF) & ~0xFFFu;
+        // Bump-allocate. Advance past any gap left by a region that was
+        // allocated at a lower address than the break.
+        uint32_t candidate = (g_vm_brk + 0xFFF) & ~0xFFFu;
+
+        // Skip forward past live regions so we never overlap one.
+        bool moved = true;
+        while (moved)
+        {
+            moved = false;
+            for (const auto& r : g_vm_regions)
+            {
+                if (candidate < r.end && r.base < candidate + size)
+                {
+                    candidate = (r.end + 0xFFF) & ~0xFFFu;
+                    moved = true;
+                }
+            }
+        }
+
+        addr = candidate;
+
         if (static_cast<uint32_t>(addr + size) > heapEnd)
         {
             std::fprintf(stderr,
@@ -670,8 +719,17 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
             SET_R3(ctx, static_cast<NTSTATUS>(0xC0000017ul)); // STATUS_NO_MEMORY
             return;
         }
+
+        if (static_cast<uint32_t>(addr + size) > g_vm_brk)
+            g_vm_brk = addr + size;
+    }
+    else if (static_cast<uint32_t>(addr + size) > g_vm_brk)
+    {
         g_vm_brk = addr + size;
     }
+
+    g_vm_regions.push_back({ addr, addr + size });
+    (void)fromRequest;
 
     // Commit zeroes the region, matching Windows semantics that the title
     // relies on for its page heap and TLS.
@@ -699,10 +757,87 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     SET_R3(ctx, STATUS_SUCCESS);
 }
 
-// The title frees whole reserved regions; returning success is correct because
-// the memory is owned by the guest VM arena and is not returned to the OS.
+PPC_FUNC(__imp__NtQueryVirtualMemory)
+{
+    // (BaseAddress, MemoryInformationClass, MemoryInformation,
+    //  MemoryInformationLength, ReturnLength)
+    //
+    // The CRT queries the region it was given to discover where the XEX
+    // descriptor lives, and uses the answer to build its heap descriptors.
+    // Returning success with an unfilled structure leaves those descriptors
+    // holding whatever was on the stack, which is how the boot path used to die
+    // writing through a small bogus pointer.
+    auto* pBase = reinterpret_cast<uint32_t*>(
+        static_cast<uintptr_t>(ctx.r3.u32));
+    const uint32_t infoClass = ctx.r4.u32;
+    auto* pInfo = reinterpret_cast<uint32_t*>(
+        static_cast<uintptr_t>(ctx.r5.u32));
+
+    if (pInfo == nullptr)
+    {
+        SET_R3(ctx, static_cast<NTSTATUS>(0xC000000Dul)); // STATUS_INVALID_PARAMETER
+        return;
+    }
+
+    const uint32_t queryAddr = (pBase != nullptr) ? *pBase : 0;
+
+    // Locate the containing live region, so the answer describes real memory.
+    uint32_t regionBase = queryAddr & ~0xFFFu;
+    uint32_t regionSize = 0x1000;
+    for (const auto& r : g_vm_regions)
+    {
+        if (queryAddr >= r.base && queryAddr < r.end)
+        {
+            regionBase = r.base;
+            regionSize = r.end - r.base;
+            break;
+        }
+    }
+
+    // MemoryInformationClass values used by the Xbox 360 CRT:
+    //   0 = MemoryBasicInformation
+    //   2 = MemorySectionInformation
+    // We answer every class with a basic descriptor, which is enough for the
+    // CRT to continue; anything more specific would need the real region map.
+    std::memset(pInfo, 0, 0x20);
+    pInfo[0] = regionBase;              // BaseAddress
+    pInfo[1] = regionBase;              // AllocationBase
+    pInfo[2] = regionSize;              // RegionSize
+    pInfo[3] = 0x1000;                  // State: MEM_COMMIT
+    pInfo[4] = 0x04;                    // Protect: PAGE_READWRITE
+    pInfo[5] = 0x02;                    // Type: MEM_PRIVATE
+
+    // ReturnLength (r7) points at a ULONG to receive the size filled in.
+    auto* pLen = reinterpret_cast<uint32_t*>(
+        static_cast<uintptr_t>(ctx.r7.u32));
+    if (pLen != nullptr)
+        *pLen = 0x20;
+
+    (void)infoClass;
+    SET_R3(ctx, STATUS_SUCCESS);
+}
+
+// The title frees whole reserved regions. The region is dropped from the live
+// set so the address can be reused; the underlying arena pages are retained
+// because they are owned by the guest VM for the life of the process.
 PPC_FUNC(__imp__NtFreeVirtualMemory)
 {
+    auto* pBaseSlot = reinterpret_cast<uint32_t*>(
+        static_cast<uintptr_t>(ctx.r3.u32));
+
+    if (pBaseSlot != nullptr)
+    {
+        const uint32_t base = *pBaseSlot;
+        for (auto it = g_vm_regions.begin(); it != g_vm_regions.end(); ++it)
+        {
+            if (it->base == base)
+            {
+                g_vm_regions.erase(it);
+                break;
+            }
+        }
+    }
+
     SET_R3(ctx, STATUS_SUCCESS);
 }
 

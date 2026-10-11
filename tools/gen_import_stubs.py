@@ -46,7 +46,7 @@ HAND_IMPLEMENTED = {
     # memory descriptors
     "MmGetPhysicalAddress", "MmMapIoSpace", "MmUnmapIoSpace", "MmMapIoSpaceEx",
     # virtual memory
-    "NtAllocateVirtualMemory", "NtFreeVirtualMemory",
+    "NtAllocateVirtualMemory", "NtFreeVirtualMemory", "NtQueryVirtualMemory",
     # module / export resolution (the game resolves most of D3D dynamically)
     "XexGetModuleHandle", "XexGetProcedureAddress", "XexGetXEntryInfo",
     "XexGetOptionalXEntryInfo", "XexGetTitleId",
