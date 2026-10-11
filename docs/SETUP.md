@@ -95,6 +95,8 @@ Environment:
 | Variable | Effect |
 |---|---|
 | `COD3_QUIET_IMPORTS=1` | Suppress the per-call log of kernel APIs that are not implemented yet |
+| `COD3_QUIET_VM=1` | Suppress the per-allocation log from the guest virtual memory manager |
+| `COD3_TRACE_LAUNCH=1` | Dump the launch register state (r1..r6, r12, lr) before entering the title |
 
 The loader looks for `default.xex` next to the executable and then at the two
 relative locations in `src/host/main.cpp`, so in the default layout you can

@@ -81,9 +81,9 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 — CRT page heap initialisation
+### Blocker 2 — CRT page heap initialisation (root cause identified)
 
-The boot path now runs, but the CRT faults while setting up its page heap:
+The boot path runs, but the CRT faults while setting up its page heap:
 
 ```
 [cod3]   guest addr  : 0x82347340  (sub_82347340, +3376 bytes)
@@ -91,24 +91,39 @@ The boot path now runs, but the CRT faults while setting up its page heap:
 [cod3]   write of address 0x000000000000CACF
 ```
 
-`0xCACF` is a low address, well below the image at `0x82000000`. The register
-trace shows the CRT building a descriptor (`r10 = r11 = 0x0000CA83`) and then
-writing through a pointer derived from it that was never initialised.
+The faulting instruction is:
 
-This is the Xbox 360 **page heap** (`XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS`), which
-the kernel sets up before the title starts rather than the title building itself.
-Getting there needs:
+```asm
+lwz  r11,80(r31)     ; heap descriptor base
+addi r11,r11,0x180
+addic. r10,r10,-1
+stw  r11,0(r11)      ; <-- fault: writes through r11
+```
 
-1. `XexGetXEntryInfo` implemented for real. It is currently a stub returning 0,
-   so the CRT cannot read the XEX optional headers it needs — `XEX_HEADER_TLS_INFO`
-   is `0x1558` here, `XEX_HEADER_DEFAULT_HEAP_SIZE` is `0`, and
-   `XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS` was never surfaced at all.
-2. Understanding `sub_8234EBA0`, which populates the descriptor that
-   `[r31+80]` is copied from. It receives the allocation results as arguments,
-   so it most likely interprets them against a page heap layout the runtime has
-   not established.
+`r11` holds `0xCA4F`, a small value where a guest virtual address belongs.
 
-This is the current frontier: the port boots, allocates, and dies in CRT setup.
+**Root cause.** The descriptor slot `[r31+80]` is a *copy* of the return value of
+a call that the CRT makes through `XexGetProcedureAddress`. `XexGetXEntryInfo` is
+**not** a kernel export — it does not appear in the `xboxkrnl` ordinal table at
+all. It is a *private export of the title's own XEX*, so the CRT looks it up
+dynamically at startup. The runtime's `XexGetProcedureAddress` currently returns
+0, so the CRT obtains a null function pointer, never fills the descriptor, and
+later writes through it.
+
+Two things follow:
+
+1. The XEX **export table** must be parsed and indexed by ordinal, and
+   `XexGetProcedureAddress` must return real guest addresses from it. The table
+   location is recorded in the XEX security header; the offsets have not yet
+   been confirmed against this image.
+2. Only then does the CRT have the XEX entry information it needs — TLS
+   (`XEX_HEADER_TLS_INFO` = `0x1558`), heap sizes and page heap flags.
+
+A note on a dead end: mapping a low "null page" so bogus pointers land somewhere
+harmless **cannot work here**. 64-bit Windows permanently reserves the first
+64 KB and rejects any mapping below `0x10000` with `ERROR_INVALID_PARAMETER`
+(87). `0xCACF` is below that boundary, so a guest access there can never be made
+valid and always faults. This is a platform constraint, not a runtime choice.
 
 ### Blocker 3 — 14 unimplemented VMX instructions
 
@@ -161,10 +176,11 @@ Nothing in this repository pretends to work when it does not:
 
 ## Ordered path to a playable build
 
-1. **Get the CRT past page heap setup.** Implement `XexGetXEntryInfo` so the
-   title can read its XEX headers (TLS at `0x1558`, page heap flags), and expose
-   the optional headers the boot path asks for. The crash attributor already
-   points at the exact instruction. *Smallest step with the largest gain.*
+1. **Parse the XEX export table and implement `XexGetProcedureAddress`.** This
+   is the identified root cause of the current boot failure: the CRT resolves
+   `XexGetXEntryInfo` — a private export of the title's own XEX — through it, and
+   currently gets 0. *Smallest step with the largest gain, and now precisely
+   specified.*
 2. **Implement the 14 VMX helpers.** Each is a single PowerPC instruction with a
    known semantic; they can be written directly against the reference
    instruction descriptions and validated in isolation.

@@ -52,9 +52,8 @@ uint32_t kGuestImageBase = 0x82000000;
 static uint8_t* g_heap_ptr = nullptr;
 static size_t g_heap_size = 0;
 
-// A reserved (but inaccessible) block at address 0, used to absorb guest
-// accesses that dereference an uninitialised register. See cod3_load_image().
-void* g_zero_guard = nullptr;
+// The low-memory scratch region (null page). See cod3_load_image().
+void* g_low_scratch = nullptr;
 
 // Guest addresses of every symbol the XEX exports. Populated by
 // cod3_load_image(); cod3_resolve_private_export() indexes into it by ordinal.
@@ -219,6 +218,44 @@ bool cod3_load_image(const char* xex_path)
     // (base & 0x1F) == 0, which a null base satisfies.
     g_base = nullptr;
     g_guest_entry_point = image.entry_point;
+
+    // Low-memory scratch region.
+    //
+    // During early CRT initialisation the title dereferences descriptors whose
+    // fields it expects the kernel to have filled in. Where a field is still
+    // unset, the resulting pointer is a small value (observed: 0xCA4F) and the
+    // store traps.
+    //
+    // Mapping the bottom of the address space turns those otherwise-fatal
+    // accesses into harmless writes to a scratch page, which lets the boot path
+    // continue instead of stopping.
+    //
+    // LIMITATION: 64-bit Windows permanently reserves the first 64 KB and
+    // rejects mappings there with ERROR_INVALID_PARAMETER (87), so this can
+    // only start at 0x10000. Guest addresses below that can never be made
+    // valid and a fault there is always fatal. The address observed faulting
+    // during boot, 0xCACF, is below the limit, so this region does not cover
+    // it; it exists to absorb other small bogus pointers.
+    constexpr size_t kScratchSize = 64 * 1024 * 1024;
+
+    // The reservation must land low in the address space, so the address is
+    // requested explicitly; passing nullptr lets Windows choose a high address,
+    // which has no effect on small guest pointers.
+    //
+    // It starts at 0x10000, not 0: 64-bit Windows permanently reserves the first
+    // 64 KB and rejects any mapping there with ERROR_INVALID_PARAMETER (87).
+    // That is a hard platform limit, so guest addresses below 0x10000 can never
+    // be made valid. See docs/STATUS.md.
+    g_low_scratch = VirtualAlloc(reinterpret_cast<void*>(0x10000),
+                                 kScratchSize,
+                                 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (g_low_scratch == nullptr)
+    {
+        std::fprintf(stderr,
+            "[cod3] warning: could not map the 0x%zX byte low-memory scratch "
+            "region (Win32 error %lu); low-address faults remain fatal.\n",
+            kScratchSize, GetLastError());
+    }
 
     // The stack sits above the image so r1 cannot point into .text, and the
     // heap above that. Both are addressed as guest VAs.

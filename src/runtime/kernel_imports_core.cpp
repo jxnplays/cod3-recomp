@@ -14,6 +14,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -611,6 +612,13 @@ struct VmRegion
 };
 static std::vector<VmRegion> g_vm_regions;
 
+// The VM logs its activity, which is useful while bringing the boot path up and
+// noisy afterwards. COD3_QUIET_VM=1 silences it.
+static const bool vm_quiet = []() {
+    const char* v = std::getenv("COD3_QUIET_VM");
+    return !(v != nullptr && v[0] == '1');
+}();
+
 PPC_FUNC(__imp__NtAllocateVirtualMemory)
 {
     // r3 points at a caller slot holding the requested BaseAddress, and we write
@@ -750,9 +758,14 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
             ctx.r3.u32, *pBaseSlot);
     }
 
-    std::fprintf(stderr,
-        "[cod3] NtAllocateVirtualMemory: flags=0x%X size=0x%X -> 0x%08X\n",
-        flags, size, addr);
+    // The VM logs its activity, which is useful while bringing the boot path up
+    // and noisy afterwards. COD3_QUIET_VM=1 silences it.
+    if (vm_quiet)
+    {
+        std::fprintf(stderr,
+            "[cod3] NtAllocateVirtualMemory: flags=0x%X size=0x%X -> 0x%08X\n",
+            flags, size, addr);
+    }
 
     SET_R3(ctx, STATUS_SUCCESS);
 }
@@ -792,6 +805,14 @@ PPC_FUNC(__imp__NtQueryVirtualMemory)
             regionSize = r.end - r.base;
             break;
         }
+    }
+
+    if (vm_quiet)
+    {
+        std::fprintf(stderr,
+            "[cod3] NtQueryVirtualMemory: addr=0x%08X class=%u -> base=0x%08X "
+            "size=0x%X (%zu live region(s))\n",
+            queryAddr, infoClass, regionBase, regionSize, g_vm_regions.size());
     }
 
     // MemoryInformationClass values used by the Xbox 360 CRT:
