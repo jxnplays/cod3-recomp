@@ -202,6 +202,46 @@ Every block reports a sane size and steps backwards by exactly that much.
 **Skips under `COD3_TOLERATE_HEAP_FAULT` are zero** — the first time the heap
 tolerance has had nothing to tolerate on this path.
 
+#### Two implementations built on inference, both reverted
+
+Worth recording because the failure mode is the project's most persistent one.
+
+`XamGetSystemVersion` and `XamLoaderGetLaunchData` are generated no-op stubs, and
+both are reached during boot. Both were implemented from a reading of their call
+sites. **Both attempts made boot worse — kernel APIs reached fell from 10 to 4 —
+and both were reverted.**
+
+What went wrong, precisely. The call site in `sub_82343C08` moves six registers
+into callee-saved registers, which reads as six out-pointers, and the caller
+then compares part of the return value against a constant:
+
+```asm
+rlwinm r11,r3,0,8,23      ; bits 8..23 of the version
+lis   r10,8               ; r10 = 0x00080000
+ori   r10,r10,41216       ; r10 = 0x0008A100
+cmplw cr6,r11,r10
+```
+
+That was read as a minimum-kernel-version gate, with a stub returning zero
+"failing" it. It is not a gate. `r11` is `0x000008A1` for any real version and
+`r10` is `0x0008A100` — three decimal orders of magnitude apart, and a masked
+value can never reach an unmasked one. The comparison cannot succeed whatever is
+returned.
+
+So the premise underneath was wrong as well: those six registers are evidently
+not six out-pointers, and writing through them is what cost the four APIs.
+
+The generated stubs stay. Returning zero is *wrong*, but it is wrong in a way
+that does not corrupt memory, and nothing established here is good enough to
+replace it. Reverting was correct after the first failure; the second attempt
+should not have been made at all.
+
+The generalisable lesson is already stated in this document after the heap
+endianness work, and this is the same lesson again: **implement what the guest
+demonstrates, leave alone what it does not.** Twice in this session a confident
+reading of a call site turned out to be wrong, and both times the only evidence
+was my own reasoning.
+
 #### An attempt that was abandoned
 
 The obvious follow-up to the above is to stop the crash handler printing a
