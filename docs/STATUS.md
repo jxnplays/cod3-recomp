@@ -162,7 +162,81 @@ They were removed once on the assumption that fixing the allocator fixed them
 too. It does not — boot went straight back to `sub_823481D8 +1057` with them
 gone.
 
-#### Heap fault tolerance (opt-in, `COD3_TOLERATE_HEAP_FAULT=1`)
+#### Blocker 3 - the block walk runs; the fault moved upstream of it
+
+**The block header endianness was wrong, in two places.** This is the most
+concrete result so far and it is fixed.
+
+`sub_823460D8` reads a block's size as:
+
+```asm
+lhz    r11,2(r30)      ; LOW half of the big-endian word at +0
+rotlwi r11,r11,4       ; x16
+subf   r31,r11,r30     ; r31 = r30 - size
+```
+
+The grow method wrote the 16-byte-unit count to the **high** half. The walk read
+a size of zero, computed `r31 = r30 - 0`, and examined each block as its own
+predecessor — not a subtle degradation, it walked the list in the wrong direction.
+
+The fault-tolerance guard had the **identical** mistake (`>> 16`). That was
+harmless while headers were uninitialised, because both halves read as garbage
+either way. The moment the grow method began writing real headers, the guard
+concluded every block had size zero and began **skipping blocks that were
+perfectly walkable**. Boot got worse because of a fix meant to make it better.
+
+Recorded because the generalisable part matters: *a guard that reads the same
+field as the code it guards must agree with it on which half is which, and
+agreeing is not automatic.* `note_skip` read the wrong half too, so the logged
+counts described a different field than they claimed.
+
+Measured after removing the probes:
+
+```
+walk #1: block=0x846A8760 units=0x0001 (16 B)    prev=0x846A8750
+walk #2: block=0x846A8E40 units=0x0001 (16 B)    prev=0x846A8E30
+walk #3: block=0x9C5B4000 units=0x0210 (8448 B)  prev=0x9C5B1F00
+```
+
+Every block reports a sane size and steps backwards by exactly that much.
+**Skips under `COD3_TOLERATE_HEAP_FAULT` are zero** — the first time the heap
+tolerance has had nothing to tolerate on this path.
+
+#### Current frontier: an unresolved 4-byte thunk
+
+The fault is now reported at `sub_823460D4 +1081`, and that offset is **not
+trustworthy**. `sub_823460D4` is a 4-byte stub containing only `.long 0x0`, and
+`sub_823460D8` is a weak alias immediately after it at +12. The registers at the
+crash are:
+
+```
+r3  = 0x846A8000     lr  = 0x823460E0
+r12 = 0x82346E34
+```
+
+`lr = 0x823460E0` is the instruction immediately after `bl 0x8234f28c` in
+`sub_823460D8`'s prologue, and `r12 = 0x82346E34` is the call site inside
+`sub_82346D98` — the same call previously identified as
+`bl 0x823460d8; lr = 0x82346E34`. So execution is in the **prologue of the real
+function**, being attributed to a stub 12 bytes earlier.
+
+Two readings, neither established:
+
+1. An indirect call genuinely lands at `0x823460D4`, i.e. 12 bytes before the
+   real entry. That would be a mis-resolved function pointer.
+2. The crash handler is attributing an in-prologue fault to the nearest preceding
+   symbol. The `+1081` is then meaningless, exactly as it is for any stub.
+
+Supporting (2): a search for `0x823460D4` in the loaded image as a pointer value
+returns **zero** occurrences, and no code in the image branches to it. If it were
+a real call target it would be referenced from somewhere.
+
+Not resolved. The cheap next step is to make the crash handler refuse to compute
+an offset inside a stub — report "inside `sub_823460D8` prologue" instead of a
+number computed from a 4-byte `.long`. That is a diagnostic-honesty fix rather
+than a port fix, but it stops this particular address being re-derived.
+
+### Heap fault tolerance (opt-in, `COD3_TOLERATE_HEAP_FAULT=1`)
 
 **This does not fix the region headers.** It makes the diagnosed faults
 survivable so the rest of the boot path can be worked on. Every skip is reported
