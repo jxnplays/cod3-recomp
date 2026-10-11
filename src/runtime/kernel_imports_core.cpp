@@ -1355,6 +1355,7 @@ PPC_FUNC(__imp__KeSetAffinityThread)
                                 : static_cast<NTSTATUS>(0xC0000001ul));
 }
 
+
 // -----------------------------------------------------------------------------
 // Object manager
 // -----------------------------------------------------------------------------
@@ -1626,15 +1627,43 @@ PPC_FUNC(__imp__ExRegisterTitleTerminateNotification)
 
 PPC_FUNC(__imp__XGetVideoMode)
 {
-    // (outWidth, outHeight, outRefresh, outPixelFormat)
-    const uint32_t width  = (ctx.r3.u32 != 0) ? ctx.r3.u32 : 0;
+    // The signature is XVideoModeInfo* - ONE out-pointer - not four separate
+    // out-parameters.
+    //
+    // The call site is unambiguous. sub_82400098 does:
+    //
+    //     addi r3,r1,144
+    //     bl   XGetVideoMode
+    //     lwz  r11,156(r1)      ; reads +0x18 relative to the struct base
+    //     subfic r11,r11,0      ; negates it and tests the carry
+    //
+    // so r3 points at a caller stack structure, and the caller reads a field
+    // 0x18 past that base afterwards. The previous four-out-parameter version
+    // wrote through r4, r5 and r6 as though they were pointers; at this call
+    // site they are ordinary register values, and storing through them faulted.
+    // That is where the boot-ending access violation at address 0x61 came from.
     uint32_t dw = 0, dh = 0, dr = 0, df = 0;
     cod3_host_display_mode(&dw, &dh, &dr, &df);
-    if (width) cod3_store_u32(ctx.r3.u32, dw);
-    if (ctx.r4.u32) cod3_store_u32(ctx.r4.u32, dh);
-    if (ctx.r5.u32) cod3_store_u32(ctx.r5.u32, dr);
-    if (ctx.r6.u32) cod3_store_u32(ctx.r6.u32, df);
-    ctx.r3.u64 = 0;
+
+    const uint32_t out = ctx.r3.u32;
+    if (out == 0)
+    {
+        // No structure supplied. There is nowhere to report a mode and no status
+        // to return, so leave r3 alone rather than inventing one.
+        return;
+    }
+
+    // XVideoModeInfo. Field +0x18 is the one the caller tests, and it is written
+    // as "1 = a valid mode was written" so that negating it clears the carry -
+    // which is what the caller's `subfic` is checking for.
+    cod3_store_u32(out + 0x00, dw);          // width
+    cod3_store_u32(out + 0x04, dh);          // height
+    cod3_store_u32(out + 0x08, dr);          // refresh rate
+    cod3_store_u32(out + 0x0C, 1);           // refresh divide
+    cod3_store_u32(out + 0x10, df);          // pixel format
+    cod3_store_u32(out + 0x14, 0);           // flags
+    cod3_store_u32(out + 0x18, 1);           // "mode is valid"
+    cod3_store_u32(out + 0x1C, 0);           // interlaced
 }
 
 PPC_FUNC(__imp__VdGetCurrentDisplayInformation)
