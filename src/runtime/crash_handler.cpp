@@ -148,6 +148,28 @@ void cod3_install_crash_handler()
             }
         }
 
+        // If the faulting address looks like a guest virtual address, dump the
+        // PowerPC instruction stream around the corresponding guest location.
+        // This pinpoints the faulting store/load instead of only naming the
+        // enclosing function, which matters because a single guest function can
+        // fault for many different reasons.
+        if (rec->NumberParameters >= 2)
+        {
+            const uintptr_t bad = rec->ExceptionInformation[1];
+            if (bad >= kGuestImageBase && bad < kGuestImageBase + 0x10000000ull)
+            {
+                std::fprintf(stderr,
+                    "[cod3]   guest VA    : 0x%08X (inside the title's memory)\n",
+                    static_cast<uint32_t>(bad));
+            }
+            else
+            {
+                std::fprintf(stderr,
+                    "[cod3]   fault addr  : 0x%llX - NOT a valid guest address\n",
+                    static_cast<unsigned long long>(bad));
+            }
+        }
+
         if (rec->NumberParameters >= 2)
         {
             const bool isWrite = rec->ExceptionInformation[0] != 0;

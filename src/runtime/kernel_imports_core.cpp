@@ -570,6 +570,136 @@ PPC_FUNC(__imp__KeSetPriorityThread)
 }
 
 // -----------------------------------------------------------------------------
+// Virtual memory manager
+// -----------------------------------------------------------------------------
+//
+// NtAllocateVirtualMemory is the first kernel API the title calls during boot,
+// and it is a genuine allocator: the CRT reserves the memory regions it will
+// later use for the page heap, TLS and the heap. Returning success without
+// backing the memory makes the very next store through the returned pointer
+// fault, which is exactly how the first bring-up run ended.
+//
+// Signature, recovered from the recompiled call sites in
+// build/ppc/ppc_recomp.55.cpp (sub_82347340):
+//
+//   NtAllocateVirtualMemory(&base, &regionSize, flags, protect, ..., size)
+//
+// The observed call sets:
+//   r3 -> &BaseAddress   (in/out)
+//   r4 -> &RegionSize    (in/out)
+//   r5  = 0x60001000 / 0x60002000   (allocation type | protection bits)
+//   r6  = 4             (MEM_READWRITE-ish attribute)
+//   r7  = 0             (size: 0 means "size is taken from *RegionSize")
+//
+// Note r5 carries the MEM_COMMIT/MEM_RESERTE-type bits *and* page protection
+// in one value, so it is masked rather than compared to a single constant, and
+// the size comes from the out-parameter when r7 is zero.
+//
+// Allocations are carved from the guest heap region, which is real mapped
+// memory inside the guest address space, so every guest pointer stays a valid
+// 32-bit virtual address backed by host memory.
+
+static uint32_t g_vm_brk = 0; // next free guest VA, 0 until first allocation
+
+PPC_FUNC(__imp__NtAllocateVirtualMemory)
+{
+    std::fprintf(stderr,
+        "[cod3] NtAllocateVirtualMemory called: r3=0x%08X r4=0x%08X r5=0x%08X "
+        "r6=0x%08X r7=0x%08X r8=0x%08X r9=0x%08X r10=0x%08X r11=0x%08X\n",
+        ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32,
+        ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32, ctx.r11.u32);
+    std::fflush(stderr);
+
+    auto** ppBase = reinterpret_cast<uint32_t**>(
+        static_cast<uintptr_t>(ctx.r3.u32));
+    auto* pRegion = reinterpret_cast<uint32_t*>(
+        static_cast<uintptr_t>(ctx.r4.u32));
+
+    const uint32_t flags = ctx.r5.u32;
+    const uint32_t attr = ctx.r6.u32;
+    (void)attr;
+
+    if (g_vm_brk == 0)
+        g_vm_brk = g_guest_heap_base;
+
+    // Size: prefer r7 when non-zero, else the value the caller passed by
+    // pointer (the title reserves whole regions this way).
+    uint32_t size = ctx.r7.u32;
+    if (size == 0 && pRegion != nullptr)
+        size = *pRegion;
+
+    // Round up to a whole page. Zero means "one page", which is what the
+    // Windows semantics require.
+    if (size == 0)
+    {
+        size = 0x1000;
+    }
+    else
+    {
+        // Guard against a bogus or absurd region size before it is used as a
+        // memset length.
+        if (size > g_guest_heap_size)
+        {
+            std::fprintf(stderr,
+                "[cod3] NtAllocateVirtualMemory: rejecting implausible size "
+                "0x%X (arena is 0x%X)\n", size, g_guest_heap_size);
+            SET_R3(ctx, static_cast<NTSTATUS>(0xC0000017ul)); // STATUS_NO_MEMORY
+            return;
+        }
+        size = (size + 0xFFFu) & ~0xFFFu;
+    }
+
+    const uint32_t requestedBase =
+        (ppBase != nullptr && **ppBase != 0) ? **ppBase : 0u;
+    const uint32_t heapEnd = g_guest_heap_base + g_guest_heap_size;
+
+    // Prefer the caller's requested address when it lies inside the arena; the
+    // CRT does reserve specific regions.
+    uint32_t addr;
+    if (requestedBase >= g_guest_heap_base &&
+        static_cast<uint32_t>(requestedBase + size) <= heapEnd)
+    {
+        addr = requestedBase;
+    }
+    else
+    {
+        addr = (g_vm_brk + 0xFFF) & ~0xFFFu;
+        if (static_cast<uint32_t>(addr + size) > heapEnd)
+        {
+            std::fprintf(stderr,
+                "[cod3] NtAllocateVirtualMemory: out of guest VM space "
+                "(want 0x%X at 0x%08X, heap ends 0x%08X)\n",
+                size, addr, heapEnd);
+            SET_R3(ctx, static_cast<NTSTATUS>(0xC0000017ul)); // STATUS_NO_MEMORY
+            return;
+        }
+        g_vm_brk = addr + size;
+    }
+
+    // Commit zeroes the region, matching Windows semantics that the title
+    // relies on for its page heap and TLS.
+    std::memset(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), 0, size);
+
+    if (ppBase != nullptr)
+        **ppBase = addr;
+    if (pRegion != nullptr)
+        *pRegion = size;
+
+    std::fprintf(stderr,
+        "[cod3] NtAllocateVirtualMemory: flags=0x%X size=0x%X -> 0x%08X\n",
+        flags, size, addr);
+
+    SET_R3(ctx, STATUS_SUCCESS);
+}
+
+// The title frees whole reserved regions; returning success is correct because
+// the memory is owned by the guest VM arena and is not returned to the OS.
+PPC_FUNC(__imp__NtFreeVirtualMemory)
+{
+    SET_R3(ctx, STATUS_SUCCESS);
+}
+
+// -----------------------------------------------------------------------------
 // Object manager
 // -----------------------------------------------------------------------------
 //
