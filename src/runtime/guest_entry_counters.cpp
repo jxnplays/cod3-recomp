@@ -51,6 +51,17 @@ struct Counters
     unsigned long long b570 = 0;  // sub_8235B570 - the per-slot seeder
     unsigned long long bf0_r3 = 0;
     unsigned long long bf0_r30 = 0;
+
+    // The allocator. The crash stack shows sub_823478F0 -> sub_823510B0 ->
+    // D08 -> E48, so the allocator is the frame that fails to return. Recording
+    // its size argument shows whether each pass asks for something new (a real
+    // loop making progress) or the same thing over and over (a path that cannot
+    // terminate).
+    unsigned long long alloc10b0 = 0;
+    unsigned long long alloc_first_r3 = 0;
+    unsigned long long alloc_first_r4 = 0;
+    unsigned long long alloc_first_r5 = 0;
+    unsigned long long alloc_last_r3 = 0;
 };
 
 // sub_82357D08 and sub_82357E48 index the same list but with different
@@ -256,6 +267,32 @@ PPC_FUNC(sub_8235B570)
     __imp__sub_8235B570(ctx, base);
 }
 
+// -----------------------------------------------------------------------------
+// sub_823510B0 - the allocator
+// -----------------------------------------------------------------------------
+//
+// The frame above the D08/E48 pair in the crash stack. sub_823478F0 is this
+// function's heap-core carve (0x82351108  bl 0x823478f0); the crash stack has
+// sub_823478F0 calling into sub_823510B0, which is the opposite direction, so
+// one of the two attributions is wrong and this counter decides which.
+extern "C" void __imp__sub_823510B0(PPCContext& __restrict ctx, uint8_t* base);
+
+PPC_FUNC(sub_823510B0)
+{
+    PPC_FUNC_PROLOGUE();
+
+    Counters& c = counters();
+    if (++c.alloc10b0 == 1)
+    {
+        c.alloc_first_r3 = ctx.r3.u32;
+        c.alloc_first_r4 = ctx.r4.u32;
+        c.alloc_first_r5 = ctx.r5.u32;
+    }
+    c.alloc_last_r3 = ctx.r3.u32;
+
+    __imp__sub_823510B0(ctx, base);
+}
+
 // Print the totals, so a run that dies mid-recursion still reports its depth.
 void cod3_report_guest_entries()
 {
@@ -335,6 +372,49 @@ void cod3_report_guest_entries()
 //      stays empty.
 //
 // (1) is the blocker. Fixing (2) alone would not make boot complete.
+//
+// -----------------------------------------------------------------------------
+// The deadlock, stated precisely
+// -----------------------------------------------------------------------------
+//
+// Counters from one run, all measured by entry override:
+//
+//   sub_823510B0 = 6416   r3 = 0x1C every time (28 bytes), r4 = 0, r5 = 0x800
+//   sub_82357D08 = 6416
+//   sub_82357E48 = 6416
+//   sub_82357BF0 = 0
+//   sub_8235B570 = 0
+//
+// NtAllocateVirtualMemory is called 80 times and succeeds every time, so the
+// guest heap is not exhausted and the VM stub is not the problem.
+//
+// Read D08 and E48 together and the cycle is explicit:
+//
+//   D08  0x82357D50  lwzx  head        D08  0x82357D58  beq -> allocate
+//   D08  0x82357D64  li    r3,28
+//   D08  0x82357D68  bl    sub_823510B0        the 28-byte node
+//   D08  0x82357D8C  li    r3,10
+//   D08  0x82357D90  bl    sub_82357E48        recurse
+//
+//   E48  0x82357E98  lwzx  head
+//   E48  0x82357E9C  cmplwi head,0
+//   E48  0x82357EA0  bne   -> return the head    non-empty: exit
+//   E48  0x82357EA4  bl    sub_82357D08           empty: recurse
+//
+// E48 recurses exactly while the head is zero, and the head is only pushed at
+// D08 0x82357DD8 (`stwx r28,r29,r30`) - which is reached from 0x82357DA0, i.e.
+// after sub_82357E48 has already returned. So the list is only populated on the
+// way back out of the recursion, and the recursion only unwinds when the list is
+// populated. With an empty list that never happens, and the two functions consume
+// the host stack until it is gone.
+//
+// Each level costs one 28-byte allocation, which is why the allocator's count
+// tracks the recursion count exactly and why its size argument never changes.
+//
+// So the free list must already be non-empty when D08 is first entered. In a
+// working run sub_82357BF0 has already seeded all 36 slots during CRT heap
+// initialisation, via sub_82352998 - and here it never runs. Fixing the
+// seeder is what breaks the deadlock; everything else is a consequence.
 
         for (unsigned i = 0; i < 8 && i < c.d08; ++i)
         {
@@ -349,5 +429,11 @@ void cod3_report_guest_entries()
             "[entries] seeding: sub_82357BF0 = %llu (r3=0x%08X r30=0x%08X),"
             " sub_8235B570 = %llu\n",
             c.bf0, c.bf0_r3, c.bf0_r30, c.b570);
+
+        std::fprintf(stderr,
+            "[entries] allocator sub_823510B0 = %llu"
+            "  first r3=0x%08X r4=0x%08X r5=0x%08X  last r3=0x%08X\n",
+            c.alloc10b0, c.alloc_first_r3, c.alloc_first_r4,
+            c.alloc_first_r5, c.alloc_last_r3);
     }
 }
