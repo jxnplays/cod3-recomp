@@ -1,0 +1,13 @@
+build/
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+*.lib
+*.a
+.vs/
+*.user
+*.suo
+*.log
+*.tmp
