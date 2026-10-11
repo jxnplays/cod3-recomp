@@ -205,6 +205,49 @@ void HeapFreeListWalk(PPCRegister& r30, PPCRegister& r31, PPCRegister& r11)
     }
 }
 
+// sub_8235B570 is the gate on writing the free-list head. sub_82357D08 only
+// stores the block it allocated when this returns non-zero, so a zero here
+// means the list is never seeded and the walk recurses forever.
+//
+// It lazily installs a method pointer at 0x8291F6D0 (defaulting to itself,
+// 0x8235B540) and calls through it, then treats STATUS_NO_MEMORY as failure.
+//
+// Wired up by the HeapListSeedGate entry in config/recomp/COD3.toml.
+void HeapListSeedGate(PPCRegister& r3, PPCRegister& r4)
+{
+    static int printed = 0;
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || printed >= 8)
+        return;
+    ++printed;
+
+    std::fprintf(stderr,
+        "[heap-seed] gate entry r3=%08X r4=%08X  [0x8291F6D0]=0x%08X\n",
+        r3.u32, r4.u32, cod3_load_u32(0x8291F6D0));
+}
+
+static void (*g_heap_slot_dumper)() = nullptr;
+
+// The store that seeds the page-heap free list:
+//
+//   loc_82357DD8:  stwx r28,r29,r30   ;  [r29 + r30] = r28
+//
+// r30 is the constant 0x825C7110 and r29 selects the slot, so this writes the
+// newly allocated block to the head the walk keeps re-reading. If it is never
+// reached the head stays zero, which is exactly the infinite recursion.
+//
+// Wired up by the HeapListSeedStore entry in config/recomp/COD3.toml.
+void HeapListSeedStore(PPCRegister& r28, PPCRegister& r29, PPCRegister& r30)
+{
+    static int printed = 0;
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || printed >= 8)
+        return;
+    ++printed;
+
+    std::fprintf(stderr,
+        "[heap-seed] storing block 0x%08X to [0x%08X]\n",
+        r28.u32, r29.u32 + r30.u32);
+}
+
 // sub_823478F0 is the page-heap allocator proper:
 //
 //   mflr  r12
@@ -222,21 +265,26 @@ void HeapFreeListWalk(PPCRegister& r30, PPCRegister& r31, PPCRegister& r11)
 void HeapAllocEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5)
 {
     static int printed = 0;
-    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || printed >= 16)
-        return;
-    ++printed;
+    static int depth = 0;
 
-    const uint32_t desc = r3.u32;
-    std::fprintf(stderr,
-        "[heap-alloc] desc=0x%08X flags=0x%08X size=0x%08X"
-        "  [+0x14]=0x%08X [+0x18]=0x%08X [+0x1C]=0x%08X\n",
-        desc, r4.u32, r5.u32,
-        desc ? cod3_load_u32(desc + 0x14) : 0,
-        desc ? cod3_load_u32(desc + 0x18) : 0,
-        desc ? cod3_load_u32(desc + 0x1C) : 0);
+    ++depth;
+    const bool want = std::getenv("COD3_TRACE_HEAP_ALLOC") != nullptr &&
+                      printed < 16;
+    if (want)
+    {
+        ++printed;
+        const uint32_t desc = r3.u32;
+        std::fprintf(stderr,
+            "[heap-alloc] depth=%-4d desc=0x%08X flags=0x%08X size=0x%08X"
+            "  [+0x14]=0x%08X [+0x18]=0x%08X [+0x1C]=0x%08X\n",
+            depth, desc, r4.u32, r5.u32,
+            desc ? cod3_load_u32(desc + 0x14) : 0,
+            desc ? cod3_load_u32(desc + 0x18) : 0,
+            desc ? cod3_load_u32(desc + 0x1C) : 0);
+    }
+    if (depth == 1)
+        depth = 0;
 }
-
-static void (*g_heap_slot_dumper)() = nullptr;
 
 void cod3_set_heap_slot_dumper(void (*fn)())
 {

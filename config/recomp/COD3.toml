@@ -65,6 +65,24 @@ name = "HeapAllocEntry"
 address = 0x823478F0
 registers = ["r3", "r4", "r5"]
 
+# The gate on writing the free-list head. sub_82357D08 stores the block it just
+# allocated only when this returns non-zero, so a zero here is why the list at
+# 0x825C7160 is never seeded and the walk recurses forever.
+[[midasm_hook]]
+name = "HeapListSeedGate"
+address = 0x8235B570
+registers = ["r3", "r4"]
+
+# The store that actually seeds the free list:
+#   loc_82357DD8:  stwx r28,r29,r30      ; [r29+r30] = r28
+# If this is never reached the head stays zero and the walk cannot terminate.
+[[midasm_hook]]
+name = "HeapListSeedStore"
+address = 0x82357DD8
+registers = ["r28", "r29", "r30"]
+
+
+
 
 
 
