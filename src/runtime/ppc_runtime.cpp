@@ -227,6 +227,26 @@ void HeapListSeedGate(PPCRegister& r3, PPCRegister& r4)
 
 static void (*g_heap_slot_dumper)() = nullptr;
 
+// sub_82357D08 re-enters itself through sub_82357E48, so counting entries at
+// loc_82357D44 - the point where it decides whether to seed the list - is the
+// direct measurement of recursion depth. A growing count alongside a static
+// head means the seeding never happens; a count that stays at 1 means the
+// loop is somewhere else entirely.
+//
+// Wired up by the HeapSeedNodeEntry entry in config/recomp/COD3.toml.
+void HeapSeedNodeEntry(PPCRegister& r29, PPCRegister& r30, PPCRegister& r28)
+{
+    static int calls = 0;
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || calls >= 12)
+        return;
+    ++calls;
+
+    const uint32_t headAddr = r29.u32 + r30.u32;
+    std::fprintf(stderr,
+        "[heap-node] entry #%d slot=[0x%08X] head=0x%08X r28=0x%08X\n",
+        calls, headAddr, cod3_load_u32(headAddr), r28.u32);
+}
+
 // The store that seeds the page-heap free list:
 //
 //   loc_82357DD8:  stwx r28,r29,r30   ;  [r29 + r30] = r28

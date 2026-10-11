@@ -73,6 +73,14 @@ name = "HeapListSeedGate"
 address = 0x8235B570
 registers = ["r3", "r4"]
 
+# sub_82357D08 is entered once per level of the recursion, so counting entries
+# is the direct way to show whether the pair is re-entering itself or looping
+# somewhere else.
+[[midasm_hook]]
+name = "HeapSeedNodeEntry"
+address = 0x82357D44
+registers = ["r29", "r30", "r28"]
+
 # The store that actually seeds the free list:
 #   loc_82357DD8:  stwx r28,r29,r30      ; [r29+r30] = r28
 # If this is never reached the head stays zero and the walk cannot terminate.
@@ -80,6 +88,7 @@ registers = ["r3", "r4"]
 name = "HeapListSeedStore"
 address = 0x82357DD8
 registers = ["r28", "r29", "r30"]
+
 
 
 
