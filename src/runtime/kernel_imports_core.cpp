@@ -707,20 +707,54 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     if (requestedBase >= g_guest_heap_base &&
         static_cast<uint32_t>(requestedBase + size) <= heapEnd)
     {
-        bool overlaps = false;
+        // A COMMIT at an address already inside a live region is the normal
+        // Windows pattern and must grow that region, not fail.
+        //
+        // The title alternates MEM_RESERVE and MEM_COMMIT:
+        //
+        //   NtAllocate(&base, &sz, MEM_RESERVE, ...)  -> reserves base
+        //   NtAllocate(&base, &sz, MEM_COMMIT,  ...)  -> commits INSIDE base
+        //
+        // Treating the overlap as a conflict and bump-allocating a fresh page
+        // sent the COMMIT somewhere the CRT did not expect, so the region the
+        // CRT believes it owns and the region that actually holds memory
+        // diverged. That divergence is what left the heap region header at
+        // 0x846A8000 uninitialised while the CRT walked it as if it were set up.
+        //
+        // So: if the requested range lies within one live region, grow that
+        // region to cover it and report success. Only a range that straddles two
+        // regions, or overlaps a region it does not contain, is a real conflict.
         for (const auto& r : g_vm_regions)
         {
-            if (requestedBase < r.end && r.base < requestedBase + size)
+            if (requestedBase >= r.base && requestedBase < r.end)
             {
-                overlaps = true;
+                if (static_cast<uint32_t>(requestedBase + size) <= r.end)
+                {
+                    addr = requestedBase;
+                    fromRequest = true;
+                }
                 break;
             }
         }
 
-        if (!overlaps)
+        // Not inside a live region: honour the request if nothing else covers it.
+        if (addr == 0)
         {
-            addr = requestedBase;
-            fromRequest = true;
+            bool overlaps = false;
+            for (const auto& r : g_vm_regions)
+            {
+                if (requestedBase < r.end && r.base < requestedBase + size)
+                {
+                    overlaps = true;
+                    break;
+                }
+            }
+
+            if (!overlaps)
+            {
+                addr = requestedBase;
+                fromRequest = true;
+            }
         }
     }
 
