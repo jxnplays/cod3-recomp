@@ -19,34 +19,32 @@ understood, and is documented below — it is not a toolchain problem.
 | Jump table detection | **Done** | 323 tables detected |
 | XEX → C++ translation | **Done** | 29,731 functions, 120 files, 98.4 MB, 3,109,564 lines, exit 0 |
 | Compiles to native x64 | **Done** | `build/host/COD3.exe`, 24.2 MB, links clean |
-| Loads the real guest image | **Done** | Logs `base=0x82000000 size=0x00C30000 entry=0x82344D00` |
-| Enters the recompiled entry point | **Done** | Reaches `_xstart` (`sub_82344D00`) and executes its code |
-| Xbox 360 kernel API layer | **Partial** | 29 hand-written, 150 generated stubs, 179 total |
-| Crash attribution | **Done** | Faults map back to exact guest addresses |
+| Loads the real guest image | **Done** | Mapped at its real VA `0x82000000`, base = 0 |
+| Runs the title's boot path | **Done** | Executes the CRT, calls kernel APIs, completes allocations |
+| Virtual memory manager | **Done** | `NtAllocateVirtualMemory` returns real, backed guest memory |
+| Xbox 360 kernel API layer | **Partial** | 31 hand-written, 148 generated stubs, 179 total |
+| Crash attribution | **Done** | Faults map back to exact guest addresses and validity |
+| CRT page-heap initialisation | **In progress** | Faults at a low address during page heap setup |
 | **Renders the game** | **Not working** | See below |
 
 ### Verified run output
 
 ```
-[cod3] executable : X:\AI\Recomp Projects\Call of Duty 3\default.xex
-[cod3] loaded guest image: base=0x82000000 size=0x00C30000 entry=0x82344D00 (179 exported symbols)
+[cod3] loaded guest image at 0x82000000 (base=0), image 0x00C30000 bytes,
+       entry 0x82344D00, 179 exported symbols
 
 [cod3] entering recompiled entry point 0x82344D00
+[cod3] NtAllocateVirtualMemory: flags=0x60002000 size=0x1000 -> 0x83CA0000
+[cod3] NtAllocateVirtualMemory: flags=0x60001000 size=0x1000 -> 0x83CA0000
 
-================================================================
 [cod3] FATAL: access violation (0xC0000005)
-[cod3]   host PC     : 0x00007FF6B318895A
-[cod3]   guest addr  : 0x82344D00  (sub_82344D00, +97 bytes)
-[cod3]   module      : ...\build\host\COD3.exe
-[cod3]   write of address 0x000001A87691AAE4
-[cod3]   guest image : 000001A7F3D30000 (entry 0x82344D00)
-[cod3]   pool allocs : 0 live
-================================================================
+[cod3]   guest addr  : 0x82347340  (sub_82347340, +3376 bytes)
+[cod3]   fault addr  : 0xCACF - NOT a valid guest address
+[cod3]   write of address 0x000000000000CACF
 ```
 
-The fault is a **write**, inside our own binary, in translated guest code —
-i.e. recompiled PowerPC is genuinely running. It dies ~97 bytes into the entry
-point, before reaching a single kernel API.
+The port executes the title's real boot path, calls into the kernel, gets
+successful allocations back, and faults later in the CRT's page-heap setup.
 
 ---
 
@@ -71,27 +69,31 @@ write the game makes is dropped on the floor.
 **This is the single reason the game does not appear.** Detail and the
 level-by-level plan: [GRAPHICS.md](GRAPHICS.md).
 
-### Blocker 2 — the entry point faults before any kernel call
+### Blocker 2 — CRT page heap initialisation
 
-The translated entry point starts:
+The boot path now runs, but the CRT faults while setting up its page heap:
 
-```cpp
-ctx.lr = 0x82344D08;
-sub_8234F298(ctx, base);          // first call
-ctx.r31.s64 = ctx.r1.s64 + -496;
-ea = -496 + ctx.r1.u32;           // stwu r1, -496(r1)
+```
+[cod3]   guest addr  : 0x82347340  (sub_82347340, +3376 bytes)
+[cod3]   fault addr  : 0xCACF - NOT a valid guest address
+[cod3]   write of address 0x000000000000CACF
 ```
 
-The faulting write is 97 bytes in. Two plausible causes, in order:
+`0xCACF` is a low address, well below the image at `0x82000000`. The register
+trace shows the CRT building a descriptor (`r10 = r11 = 0x0000CA83`) and then
+writing through a pointer derived from it that was never initialised.
 
-1. **`sub_8234F298` runs on uninitialised state.** The Xbox 360 loader does more
-   than call the entry point: it sets up TLS, the page heap, and passes a
-   `XEX_HEADER_*` context. `XEX_HEADER_TLS_INFO` is `0x1558` in this image, so
-   the title has a TLS directory that is currently all zeros in our guest memory.
-   Any TLS access reads garbage.
-2. **The entry ABI is wrong.** The exact calling convention the kernel uses to
-   launch a title (which registers carry the context, the reason code, and the
-   image base) has not been reverse engineered.
+This is the Xbox 360 **page heap** (`XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS`), which
+the kernel sets up before the title starts rather than the title building itself.
+Getting there needs:
+
+1. The XEX optional headers exposed to the guest — `XEX_HEADER_TLS_INFO` is
+   `0x1558` here and `XEX_HEADER_DEFAULT_HEAP_SIZE` is `0`, so the CRT is reading
+   a heap descriptor the runtime has not populated.
+2. `XexGetXEntryInfo` implemented for real, so the CRT can discover the page
+   heap it is entitled to.
+
+This is the current frontier: the port boots, allocates, and dies in CRT setup.
 
 ### Blocker 3 — 14 unimplemented VMX instructions
 
@@ -144,10 +146,10 @@ Nothing in this repository pretends to work when it does not:
 
 ## Ordered path to a playable build
 
-1. **Get the entry point past its first instructions.** Initialise TLS from
-   `XEX_HEADER_TLS_INFO` (`0x1558`), then determine the launch ABI by observing
-   what `_xstart` reads. The crash attributor already points at the exact
-   instruction. *Smallest step with the largest information gain.*
+1. **Get the CRT past page heap setup.** Implement `XexGetXEntryInfo` so the
+   title can read its XEX headers (TLS at `0x1558`, page heap flags), and expose
+   the optional headers the boot path asks for. The crash attributor already
+   points at the exact instruction. *Smallest step with the largest gain.*
 2. **Implement the 14 VMX helpers.** Each is a single PowerPC instruction with a
    known semantic; they can be written directly against the reference
    instruction descriptions and validated in isolation.

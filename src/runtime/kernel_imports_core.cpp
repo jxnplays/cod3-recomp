@@ -603,14 +603,11 @@ static uint32_t g_vm_brk = 0; // next free guest VA, 0 until first allocation
 
 PPC_FUNC(__imp__NtAllocateVirtualMemory)
 {
-    std::fprintf(stderr,
-        "[cod3] NtAllocateVirtualMemory called: r3=0x%08X r4=0x%08X r5=0x%08X "
-        "r6=0x%08X r7=0x%08X r8=0x%08X r9=0x%08X r10=0x%08X r11=0x%08X\n",
-        ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32,
-        ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32, ctx.r11.u32);
-    std::fflush(stderr);
-
-    auto** ppBase = reinterpret_cast<uint32_t**>(
+    // r3 points at a caller slot holding the requested BaseAddress, and we write
+    // the allocated address back into that same slot. It is a pointer TO a
+    // pointer; one dereference yields the slot, two would follow the caller's
+    // (still unset) pointer into address 0.
+    auto* pBaseSlot = reinterpret_cast<uint32_t*>(
         static_cast<uintptr_t>(ctx.r3.u32));
     auto* pRegion = reinterpret_cast<uint32_t*>(
         static_cast<uintptr_t>(ctx.r4.u32));
@@ -650,7 +647,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     }
 
     const uint32_t requestedBase =
-        (ppBase != nullptr && **ppBase != 0) ? **ppBase : 0u;
+        (pBaseSlot != nullptr && *pBaseSlot != 0) ? *pBaseSlot : 0u;
     const uint32_t heapEnd = g_guest_heap_base + g_guest_heap_size;
 
     // Prefer the caller's requested address when it lies inside the arena; the
@@ -680,10 +677,20 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     // relies on for its page heap and TLS.
     std::memset(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), 0, size);
 
-    if (ppBase != nullptr)
-        **ppBase = addr;
+    if (pBaseSlot != nullptr)
+        *pBaseSlot = addr;
     if (pRegion != nullptr)
         *pRegion = size;
+
+    // Verify the write-back is actually visible; this is the single most
+    // important invariant of the whole runtime and worth asserting explicitly.
+    if (pBaseSlot != nullptr && *pBaseSlot != addr)
+    {
+        std::fprintf(stderr,
+            "[cod3] NtAllocateVirtualMemory: WRITE-BACK FAILED at 0x%08X "
+            "(read back 0x%08X)\n",
+            ctx.r3.u32, *pBaseSlot);
+    }
 
     std::fprintf(stderr,
         "[cod3] NtAllocateVirtualMemory: flags=0x%X size=0x%X -> 0x%08X\n",
