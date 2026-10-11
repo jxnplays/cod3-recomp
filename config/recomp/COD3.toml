@@ -57,6 +57,15 @@ name = "HeapFreeListWalk"
 address = 0x82357E74
 registers = ["r30", "r31", "r11"]
 
+# The allocation itself. sub_823510B0 calls this with the page heap descriptor
+# and a size, and a null return is what drives the recursion above, so report
+# the descriptor and the fields sub_823478F0 tests.
+[[midasm_hook]]
+name = "HeapAllocEntry"
+address = 0x823478F0
+registers = ["r3", "r4", "r5"]
+
+
 
 
 

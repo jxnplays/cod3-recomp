@@ -205,6 +205,37 @@ void HeapFreeListWalk(PPCRegister& r30, PPCRegister& r31, PPCRegister& r11)
     }
 }
 
+// sub_823478F0 is the page-heap allocator proper:
+//
+//   mflr  r12
+//   bl    0x8234F280          ; restfpr
+//   addi  r31,r1,-320
+//   stwu  r1,-320(r1)
+//   ...
+//   lwz   r11,20(r30)         ; r30 = r3 = descriptor; reads descriptor+0x14
+//
+// A null descriptor therefore faults at offset 0x14, which is what this port
+// used to die on. It is also called on the path that recurses, so a null
+// return here is the proximate cause of the stack overflow.
+//
+// Wired up by the HeapAllocEntry entry in config/recomp/COD3.toml.
+void HeapAllocEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5)
+{
+    static int printed = 0;
+    if (std::getenv("COD3_TRACE_HEAP_ALLOC") == nullptr || printed >= 16)
+        return;
+    ++printed;
+
+    const uint32_t desc = r3.u32;
+    std::fprintf(stderr,
+        "[heap-alloc] desc=0x%08X flags=0x%08X size=0x%08X"
+        "  [+0x14]=0x%08X [+0x18]=0x%08X [+0x1C]=0x%08X\n",
+        desc, r4.u32, r5.u32,
+        desc ? cod3_load_u32(desc + 0x14) : 0,
+        desc ? cod3_load_u32(desc + 0x18) : 0,
+        desc ? cod3_load_u32(desc + 0x1C) : 0);
+}
+
 static void (*g_heap_slot_dumper)() = nullptr;
 
 void cod3_set_heap_slot_dumper(void (*fn)())
