@@ -41,10 +41,17 @@ NEW = (
     '// image. The runtime keeps the table elsewhere, so ask it where the real\n'
     '// one is. The slot arithmetic is unchanged:\n'
     '//     byte offset = (guest - PPC_CODE_BASE) * 2\n'
+    '//\n'
+    '// The call-taking variant also reports each indirect call when\n'
+    '// COD3_TRACE_ENTRIES is set. That is the only reliable way to see the\n'
+    '// guest call chain: the generated code tail-calls freely, so a host\n'
+    '// stack walk collapses many distinct callers onto one symbol.\n'
     'PPCFunc* cod3_lookup_indirect(uint32_t guest);\n'
+    'PPCFunc* cod3_lookup_indirect_call(uint32_t guest, const PPCContext& ctx);\n'
     '\n'
     '#ifndef PPC_CALL_INDIRECT_FUNC\n'
-    '#define PPC_CALL_INDIRECT_FUNC(x) (cod3_lookup_indirect(x))(ctx, base)\n'
+    '#define PPC_CALL_INDIRECT_FUNC(x) \\\n'
+    '    (cod3_lookup_indirect_call(x, ctx))(ctx, base)\n'
     '#endif\n'
 )
 

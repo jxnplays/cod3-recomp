@@ -13,6 +13,7 @@
 
 #include "ppc_context.h"
 
+#include <cstddef>
 #include <cstdint>
 
 // -----------------------------------------------------------------------------
@@ -152,6 +153,22 @@ size_t cod3_pool_live_allocations();
 // context, and leave the context's r3 holding the return value on completion.
 // `address` is a guest virtual address (e.g. the XEX entry point).
 void cod3_run_guest_function(uint32_t address, PPCContext& ctx);
+
+// Recover the guest link register saved in the host frame at `returnAddress`.
+//
+// Each recompiled guest function spills its incoming link register to a fixed
+// offset in its own frame, so the value identifies the guest call site. This is
+// what makes the crash report's call chain usable: the generated code
+// tail-calls, so the symbol a host frame maps to is often not the function that
+// made the call, but the link register always is.
+void cod3_frame_link_register(const void* returnAddress, uint32_t* outLr);
+
+// Map a host code address back to the guest function it belongs to.
+bool cod3_attribute_host_pc(const void* pc, uint32_t* guest, uint64_t* distance);
+
+// Record the guest stack frame size a translated function opens with, so its
+// saved link register can be recovered from a host stack frame.
+void cod3_record_frame_size(uint32_t guest, int32_t size);
 
 // Resolve a private export ordinal (>= 0x10000) against the recompiled function
 // table, returning the guest virtual address of the target, or 0 if unknown.

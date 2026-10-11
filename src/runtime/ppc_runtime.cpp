@@ -139,6 +139,26 @@ PPCFunc* cod3_lookup_indirect(uint32_t guest)
     return fn != nullptr ? fn : cod3_unresolved_indirect_target;
 }
 
+// Resolve an indirect call and, when entry tracing is on, report it.
+//
+// This is what PPC_CALL_INDIRECT_FUNC expands to. Tracing here rather than in
+// cod3_lookup_indirect() is deliberate: the lookup is a pure function of the
+// target address, whereas the useful information - who called, with what
+// arguments - is only available at the call site, where ctx is in scope.
+PPCFunc* cod3_lookup_indirect_call(uint32_t guest, const PPCContext& ctx)
+{
+    static int printed = 0;
+    if (printed < 600 && std::getenv("COD3_TRACE_ENTRIES") != nullptr)
+    {
+        ++printed;
+        std::fprintf(stderr,
+            "[call] -> 0x%08X   lr=0x%08X  r3=0x%08X r4=0x%08X r5=0x%08X\n",
+            guest, static_cast<uint32_t>(ctx.lr), ctx.r3.u32, ctx.r4.u32,
+            ctx.r5.u32);
+    }
+    return cod3_lookup_indirect(guest);
+}
+
 // -----------------------------------------------------------------------------
 // Runtime service addresses
 // -----------------------------------------------------------------------------
@@ -636,6 +656,30 @@ bool cod3_load_image(const char* xex_path)
             ++mapped;
         }
 
+        // Record each function's stack frame size so the crash report can
+        // recover its saved link register. Nearly every translated function
+        // opens with `mflr r12 / stw r12,8(r1) / stwu r1,-N(r1)`, sometimes
+        // after a `bl` to a register-save helper, so scan the first few
+        // instructions rather than assuming a fixed shape.
+        for (size_t i = 0; PPCFuncMappings[i].host != nullptr; ++i)
+        {
+            const uint32_t guest = PPCFuncMappings[i].guest;
+            if (guest < codeBase || guest >= codeBase + codeSize)
+                continue;
+
+            for (uint32_t k = 0; k < 6; ++k)
+            {
+                const uint32_t insn = cod3_load_u32(guest + k * 4);
+                // stwu r1,-N(r1)
+                if ((insn & 0xFFFF0000u) == 0x94210000u)
+                {
+                    cod3_record_frame_size(guest,
+                                           static_cast<int32_t>(insn & 0xFFFF));
+                    break;
+                }
+            }
+        }
+
         // Any gap left as null would be called through address 0, so point the
         // gaps at a trap that reports them.
         for (size_t offset = 0; offset + sizeof(void*) <= indirectTableSize;
@@ -939,6 +983,76 @@ void cod3_run_guest_function(uint32_t address, PPCContext& ctx)
     r.fn(ctx, g_base);
 }
 
+// Record the arguments a guest function was entered with, and the address it
+// was called from.
+//
+// The host stack cannot be mapped back to a guest call chain reliably: the
+// generated code tail-calls freely, so several frames collapse onto the same
+// symbol. The link register, however, is set by the caller immediately before
+// the call and still holds the return address when the callee faults, which is
+// exactly the information a stack walk cannot recover.
+void cod3_trace_guest_entry(uint32_t address, const PPCContext& ctx)
+{
+    static int printed = 0;
+    if (std::getenv("COD3_TRACE_ENTRIES") == nullptr || printed >= 400)
+        return;
+    ++printed;
+    std::fprintf(stderr,
+        "[entry] 0x%08X  lr=0x%08X  r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X\n",
+        address, static_cast<uint32_t>(ctx.lr), ctx.r3.u32, ctx.r4.u32,
+        ctx.r5.u32, ctx.r6.u32);
+}
+
+// Resolve an indirect call, tracing it when COD3_TRACE_ENTRIES is set.
+// Defined next to cod3_lookup_indirect, which it delegates to.
+PPCFunc* cod3_lookup_indirect_call(uint32_t guest, const PPCContext& ctx);
+
+// Where every translated function spills its incoming link register.
+//
+// Every recompiled guest function begins with `mflr r12` followed by
+// `stw r12,-8(r1)`, and most open their frame with `stwu r1,-N(r1)`, so the
+// saved link register is the word at r1-8 in that frame. Recording the frame
+// size per function lets cod3_frame_link_register() find r1 again.
+static std::unordered_map<uint32_t, int32_t> g_frame_sizes;
+
+void cod3_record_frame_size(uint32_t guest, int32_t size)
+{
+    g_frame_sizes[guest] = size;
+}
+
+void cod3_frame_link_register(const void* returnAddress, uint32_t* outLr)
+{
+    *outLr = 0;
+    uint32_t guest = 0;
+    uint64_t distance = 0;
+    if (!cod3_attribute_host_pc(returnAddress, &guest, &distance))
+        return;
+
+    const auto it = g_frame_sizes.find(guest);
+    if (it == g_frame_sizes.end())
+        return;
+
+    // The host return address sits inside this frame; the guest stack pointer
+    // is a little below it, and the saved link register is 8 bytes below that.
+    // Scanning back is bounded by the frame size so a mismatch cannot run away.
+    const int32_t frame = it->second;
+    if (frame <= 0 || frame > 4096)
+        return;
+
+    const auto* base = static_cast<const uint8_t*>(returnAddress);
+    for (int32_t off = 8; off <= frame + 64; off += 8)
+    {
+        uint32_t candidate = 0;
+        std::memcpy(&candidate, base - off, sizeof(candidate));
+        if (candidate >= kGuestImageBase &&
+            candidate < kGuestImageBase + 0x1000000u)
+        {
+            *outLr = candidate;
+            return;
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Loader-populated globals
 // -----------------------------------------------------------------------------
@@ -1088,13 +1202,9 @@ uint32_t cod3_xex_default_field_slot(uint32_t field)
     return slot;
 }
 
-// Guest call depth tracker.
-//
-// Tracing every recompiled function call is not possible without instrumenting
-// the generated code, but the boot path makes only a bounded number of kernel
-// calls before it either succeeds or faults, so recording the last N guest
-// function entries is enough to see where execution got to.
 static std::vector<uint32_t> g_guest_trace;
+// Depth at which entry tracing starts, so the useful tail is what gets printed.
+static int g_guest_trace_depth = 0;
 static bool g_guest_trace_enabled = false;
 
 void cod3_set_guest_trace(bool enabled)
@@ -1108,11 +1218,12 @@ void cod3_set_guest_trace(bool enabled)
 
 void cod3_record_guest_call(uint32_t address)
 {
-    if (!g_guest_trace_enabled)
-        return;
-    if (g_guest_trace.size() >= 4000)
-        return; // stop growing rather than corrupting memory
-    g_guest_trace.push_back(address);
+    if (g_guest_trace_enabled)
+    {
+        if (g_guest_trace.size() >= 4000)
+            return; // stop growing rather than corrupting memory
+        g_guest_trace.push_back(address);
+    }
 }
 
 // -----------------------------------------------------------------------------

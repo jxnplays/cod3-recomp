@@ -125,8 +125,26 @@ void print_guest_call_stack()
         if (!attribute_host_pc(frames[i], &guest, &distance))
             continue;
 
-        std::fprintf(stderr, "    #%-2d sub_%.8X  (host %p, +%zu)\n",
-                     printed++, guest, frames[i], distance);
+        // The recompiled code tail-calls aggressively, so consecutive host
+        // frames often resolve to the same guest function and the symbol alone
+        // does not say who called. The guest link register does: each `bl` sets
+        // it to the return address immediately before the call, so it identifies
+        // the call site even when the caller's own frame has been replaced.
+        uint32_t lr = 0;
+        cod3_frame_link_register(frames[i], &lr);
+
+        if (lr != 0)
+        {
+            std::fprintf(stderr,
+                "    #%-2d sub_%.8X  called from 0x%08X  (host %p, +%zu)\n",
+                printed++, guest, lr, frames[i], distance);
+        }
+        else
+        {
+            std::fprintf(stderr, "    #%-2d sub_%.8X  (host %p, +%zu)\n",
+                         printed++, guest, frames[i], distance);
+        }
+
         if (printed >= 40)
         {
             std::fprintf(stderr, "    ... (truncated)\n");
@@ -143,6 +161,14 @@ void print_guest_call_stack()
 }
 
 } // namespace
+
+// Exposed so the runtime can recover a frame's guest link register; see
+// cod3_frame_link_register() in ppc_runtime.cpp. This has to live outside the
+// anonymous namespace or it gets internal linkage and will not link.
+bool cod3_attribute_host_pc(const void* pc, uint32_t* guest, uint64_t* distance)
+{
+    return attribute_host_pc(pc, guest, distance);
+}
 
 void cod3_install_crash_handler()
 {
