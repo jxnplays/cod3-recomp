@@ -87,9 +87,10 @@ static void cod3_unresolved_indirect_report(PPCContext& ctx, uint8_t* base)
     if (reported < 12)
     {
         std::fprintf(stderr,
-            "[cod3] unresolved indirect call from guest 0x%08X "
+            "[cod3] unresolved indirect call: target=0x%08X from guest 0x%08X "
             "(r3=0x%08X r4=0x%08X r8=0x%08X)\n",
-            static_cast<uint32_t>(ctx.lr), ctx.r3.u32, ctx.r4.u32, ctx.r8.u32);
+            ctx.ctr.u32, static_cast<uint32_t>(ctx.lr),
+            ctx.r3.u32, ctx.r4.u32, ctx.r8.u32);
         ++reported;
     }
     else if (reported == 12)
@@ -195,26 +196,36 @@ void cod3_register_runtime_services()
     if (g_runtime_services_ready || g_indirect_table_size == 0)
         return;
 
-    auto** table = reinterpret_cast<PPCFunc**>(
-        static_cast<uintptr_t>(g_indirect_table_base));
-    const size_t slots = g_indirect_table_size / sizeof(void*);
+    const uintptr_t tableHost =
+        static_cast<uintptr_t>(g_indirect_table_base);
+
+    // A slot's byte offset is (guest - CODE_BASE) * 2. Guest function
+    // addresses are 4-byte aligned, so every REAL slot lands on an 8-byte
+    // boundary. Scanning at 2-byte stride would read unaligned garbage as if
+    // it were a pointer and conclude the table is full, so walk by
+    // sizeof(void*) instead.
+    constexpr size_t kSlotStride = sizeof(void*);
 
     // Find the highest occupied slot; place the services just above it.
-    size_t highestUsed = 0;
-    for (size_t i = 0; i < slots; ++i)
+    size_t highestUsedByte = 0;
+    for (size_t byte = 0; byte + sizeof(void*) <= g_indirect_table_size;
+         byte += kSlotStride)
     {
-        if (table[i] != nullptr &&
-            table[i] != cod3_unresolved_indirect_target)
-        {
-            highestUsed = i;
-        }
+        auto** slot = reinterpret_cast<PPCFunc**>(tableHost + byte);
+        if (*slot != nullptr && *slot != cod3_unresolved_indirect_target)
+            highestUsedByte = byte;
     }
 
-    const size_t first = highestUsed + 64; // small gap for safety
-    if (first + RuntimeService_Count >= slots)
+    const size_t firstByte = highestUsedByte + kSlotStride * 8;
+    if (firstByte + RuntimeService_Count * kSlotStride >=
+        g_indirect_table_size)
     {
         std::fprintf(stderr,
-            "[cod3] no room in the indirect call table for runtime services\n");
+            "[cod3] no room in the indirect call table for runtime services "
+            "(highestUsedByte=0x%zx need=0x%zx have=0x%zx)\n",
+            highestUsedByte,
+            firstByte + RuntimeService_Count * kSlotStride,
+            g_indirect_table_size);
         return;
     }
 
@@ -224,17 +235,22 @@ void cod3_register_runtime_services()
 
     for (size_t i = 0; i < RuntimeService_Count; ++i)
     {
-        table[first + i] = services[i] != nullptr ? services[i]
-                                                  : cod3_unresolved_indirect_target;
+        *reinterpret_cast<PPCFunc**>(
+            tableHost + firstByte + i * kSlotStride) =
+            services[i] != nullptr ? services[i]
+                                   : cod3_unresolved_indirect_target;
     }
 
-    g_runtime_service_base = kCodeBase +
-                              static_cast<uint32_t>((first) * sizeof(void*));
+    g_runtime_service_base =
+        kCodeBase + static_cast<uint32_t>(firstByte);
     g_runtime_services_ready = true;
 
     std::fprintf(stderr,
         "[cod3] runtime services at 0x%08X (table slots %zu..%zu)\n",
-        g_runtime_service_base, first, first + RuntimeService_Count - 1);
+        g_runtime_service_base,
+        (g_runtime_service_base - kCodeBase) / kSlotStride,
+        (g_runtime_service_base - kCodeBase) / kSlotStride +
+            RuntimeService_Count - 1);
 
     // Publish the heap method table entry the CRT dereferences directly.
     //
@@ -500,8 +516,13 @@ bool cod3_load_image(const char* xex_path)
     const size_t indirectTableBase = kGuestImageBase + image_extent;
     const uint32_t codeBase = kCodeBase;
     const uint32_t codeSize = kCodeSize;
+    // Headroom above the last code slot so the runtime services have somewhere
+    // to live. See cod3_register_runtime_services().
+    const size_t kServiceHeadroom = 0x1000;
+    static_assert(kServiceHeadroom % sizeof(void*) == 0, "aligned slots");
     const size_t indirectTableSize =
-        (static_cast<size_t>(codeSize) * 2) + sizeof(void*);
+        (static_cast<size_t>(codeSize) * 2) + kServiceHeadroom +
+        sizeof(void*);
 
     const size_t imageBase = kGuestImageBase;
     const size_t stackBase = indirectTableBase + indirectTableSize;
@@ -550,6 +571,13 @@ bool cod3_load_image(const char* xex_path)
             reinterpret_cast<uintptr_t>(indirectTableBase);
         std::memset(reinterpret_cast<void*>(tableHost), 0, indirectTableSize);
 
+        // A slot lives at byte offset (guest - CODE_BASE) * 2, exactly as
+        // PPC_LOOKUP_FUNC computes it. Guest functions are 4-byte aligned, so
+        // every real slot is 8-byte aligned. Walking the table at 2-byte
+        // stride would both miss that and let the gap fill below overlap and
+        // corrupt adjacent real slots, so use sizeof(void*) throughout.
+        constexpr size_t kSlotStride = sizeof(void*);
+
         size_t mapped = 0;
         for (size_t i = 0; PPCFuncMappings[i].host != nullptr; ++i)
         {
@@ -557,17 +585,19 @@ bool cod3_load_image(const char* xex_path)
             if (guest < codeBase || guest >= codeBase + codeSize)
                 continue;
 
-            const size_t index = (guest - codeBase) * sizeof(void*);
-            auto** slot = reinterpret_cast<PPCFunc**>(
-                tableHost + index);
+            if ((guest - codeBase) % 4 != 0)
+                continue; // not a real instruction address
+
+            const size_t index = (guest - codeBase) * 2;
+            auto** slot = reinterpret_cast<PPCFunc**>(tableHost + index);
             *slot = PPCFuncMappings[i].host;
             ++mapped;
         }
 
         // Any gap left as null would be called through address 0, so point the
         // gaps at a trap that reports them.
-        for (size_t offset = 0; offset < indirectTableSize;
-             offset += sizeof(void*))
+        for (size_t offset = 0; offset + sizeof(void*) <= indirectTableSize;
+             offset += kSlotStride)
         {
             auto** slot = reinterpret_cast<PPCFunc**>(tableHost + offset);
             if (*slot == nullptr)
