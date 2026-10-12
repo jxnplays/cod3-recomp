@@ -13,10 +13,45 @@ if (NOT WIN32)
                         "address space reservation and the file pickers.")
 endif()
 
-# The icon and version information. RC_DEPENDS makes a change to the icon
-# rebuild the executable, which it otherwise would not.
-enable_language(RC)
-set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /I\"${CMAKE_CURRENT_SOURCE_DIR}/resources\"")
+# The icon and version information.
+#
+# Compiled by calling rc.exe directly rather than letting CMake handle the .rc.
+# CMake preprocesses RC files with `clang -E` when the RC compiler is
+# clang-derived - which it always is here, because clang-cl is the compiler - and
+# that preprocessing step fails on this file. rc.exe compiles it without
+# complaint, by hand, in every argument form CMake emits, so the wrapper is the
+# problem and not the resource.
+#
+# Invoking rc.exe explicitly also means the result does not depend on how CMake
+# chooses to treat RC files for a given toolchain, which is the kind of thing
+# that breaks again on the next compiler upgrade.
+set(COD3_RESOURCES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources")
+set(COD3_RC           "${COD3_RESOURCES_DIR}/CoD3.rc")
+set(COD3_ICO          "${COD3_RESOURCES_DIR}/CoD3.ico")
+set(COD3_RES          "${CMAKE_CURRENT_BINARY_DIR}/CoD3_resources.res")
+
+# rc.exe lives in the Windows SDK, not the MSVC tools directory, and the exact
+# version directory changes with SDK updates. Glob for it rather than naming one.
+file(GLOB COD3_RC_EXE
+     "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/rc.exe"
+     "C:/Program Files/Windows Kits/10/bin/*/x64/rc.exe")
+list(SORT COD3_RC_EXE)
+list(REVERSE COD3_RC_EXE)   # newest SDK first
+list(GET COD3_RC_EXE 0 COD3_RC_EXE)
+
+if (NOT COD3_RC_EXE)
+    # Without a resource compiler the executable still builds; it just has no
+    # icon and no version resource. Worth saying out loud rather than failing.
+    message(WARNING "CoD3: rc.exe not found; the executable builds without an icon or version information.")
+    set(COD3_RES "")
+else()
+    add_custom_command(
+        OUTPUT "${COD3_RES}"
+        COMMAND "${COD3_RC_EXE}" /fo "${COD3_RES}" /I "${COD3_RESOURCES_DIR}" "${COD3_RC}"
+        DEPENDS "${COD3_RC}" "${COD3_ICO}"
+        COMMENT "Compiling resources (icon, version information)"
+        VERBATIM)
+endif()
 
 add_executable(CoD3 WIN32
     "log.cpp"
@@ -76,7 +111,7 @@ add_executable(CoD3 WIN32
     "watchdog.cpp"
     "modules.cpp"
     "coroutines.cpp"
-    "resources/CoD3.rc")
+    ${COD3_RES})
 
 # A console application: setup is interactive and the import trap has to be
 # readable. WIN32 above is overridden here deliberately.
