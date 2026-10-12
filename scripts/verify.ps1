@@ -24,9 +24,13 @@ $Root = Split-Path -Parent $PSScriptRoot
 
 $LlvmBin = 'C:\Program Files\LLVM\bin'
 $VsInstaller = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer'
+# Globbed, newest first, for the same reason as in recompile.ps1: a fixed list
+# named only one Visual Studio version and broke on every other.
 $VcVars = @(
-    'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat'
-    'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+    Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName
+    Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 $env:PATH = "$VsInstaller;$LlvmBin;$env:PATH"
 

@@ -26,12 +26,19 @@ $Root = Split-Path -Parent $PSScriptRoot
 # attribute. The MSVC environment supplies the Windows SDK headers only.
 $LlvmBin = 'C:\Program Files\LLVM\bin'
 $VsInstaller = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer'
+# Searched newest first. A fixed list broke on any Visual Studio version it did
+# not name, so the editions are globbed instead: 18 before 17, Community and
+# BuildTools, which covers what the tool actually needs - the Windows SDK
+# headers and the MSVC environment. Clang supplies the compiler proper.
 $VcVars = @(
-    'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat'
-    'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+    Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName
+    Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if (-not $VcVars) { throw "vcvars64.bat not found. Install Visual Studio Build Tools." }
+if (-not $VcVars) { throw "vcvars64.bat not found. Install Visual Studio or the Build Tools." }
+Write-Host "using $VcVars"
 if (-not (Test-Path "$LlvmBin\clang-cl.exe")) { throw "clang-cl not found at $LlvmBin." }
 $env:PATH = "$VsInstaller;$LlvmBin;$env:PATH"
 
@@ -67,7 +74,7 @@ if (-not (Test-Path $Xex)) {
 # --- 1. Host tools ---------------------------------------------------------
 if ($BuildTools -or -not (Test-Path $Recomp)) {
     Write-Host '==> Building XenonRecomp and XenonAnalyse' -ForegroundColor Cyan
-    Invoke-InVsEnv "cmake -S `"$Root\tools\XenonRecomp`" -B `"$ToolBuild`" -G Ninja -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Release"
+    Invoke-InVsEnv "cmake -S `"$Root\tools\XenonRecomp`" -B `"$ToolBuild`" -G Ninja -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Release"
     Invoke-InVsEnv "cmake --build `"$ToolBuild`" --target XenonRecomp XenonAnalyse --parallel $Jobs"
 }
 
@@ -133,7 +140,7 @@ if ($BuildLib -or $BuildHost) {
 
     Write-Host '==> Compiling' -ForegroundColor Cyan
     $Build = Join-Path $Root 'build'
-    Invoke-InVsEnv "cmake -S `"$Root`" -B `"$Build`" -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Release"
+    Invoke-InVsEnv "cmake -S `"$Root`" -B `"$Build`" -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Release"
     $Target = if ($BuildHost) { '--target CoD3' } else { '' }
     Invoke-InVsEnv "cmake --build `"$Build`" $Target --parallel $Jobs"
 
