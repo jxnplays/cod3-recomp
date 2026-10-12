@@ -313,11 +313,11 @@ bool Window::HasFocus()
     return window != nullptr && GetForegroundWindow() == window;
 }
 
-bool Window::TakeRawMouse(long& x, long& y)
+bool Window::RawMouseTotal(long& x, long& y)
 {
     if (!g_rawRegistered.load()) { x = 0; y = 0; return false; }
-    x = g_rawX.exchange(0, std::memory_order_relaxed);
-    y = g_rawY.exchange(0, std::memory_order_relaxed);
+    x = g_rawX.load(std::memory_order_relaxed);
+    y = g_rawY.load(std::memory_order_relaxed);
     return true;
 }
 

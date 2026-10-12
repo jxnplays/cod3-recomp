@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "window.h"
 #include "overlay.h"
+#include "render_internal.h"
 #include "settings.h"
 
 #include <algorithm>
@@ -123,23 +124,54 @@ namespace
     // How far the pointer moved since the last look, in stick units. Full
     // deflection at about twenty five pixels in a sixtieth of a second, a
     // brisk turn rather than a twitch.
+    //
+    // What the title reads is one number per frame, not one per read. It asks
+    // for its input twice a frame - COD3_PADRATE counts the asks, and it is
+    // two for every frame it draws - and on a console both asks return the
+    // same pad, because the pad is sampled once a frame and held. Here the
+    // first ask used to take the whole frame's movement and the second got
+    // nothing, so the stick the title steered by was zero half the time.
+    //
+    // So movement is collected and published per frame rather than taken per
+    // read. The counts are read from a running total, the difference from the
+    // last one taken is this read's share, and the share is held until the
+    // title's next swap: both asks in a frame then see the same deflection,
+    // and no movement is dropped or applied a frame early.
     void ReadMouse(int16_t& outX, int16_t& outY)
     {
         outX = 0;
         outY = 0;
 
-        // The mouse's own movement is taken whether it is used or not, so
+        // What has been read out of the mouse's total so far, and what has
+        // been given to the title. What is given is the whole of a frame's
+        // movement, published once, and both asks in that frame read it.
+        static long seenX = 0, seenY = 0;         // of the mouse's running total
+        static long givenX = 0, givenY = 0;       // published to the title
+        static uint64_t lastSwap = uint64_t(-1);
+
+        // The mouse's own movement is read whether it is used or not, so
         // that what piled up while the menu was open is not a jump the
         // moment the window takes the mouse back.
-        long rawX = 0, rawY = 0;
-        const bool raw = Window::TakeRawMouse(rawX, rawY) && Settings::Get().rawMouse;
-        if (!g_mouseHeld.load()) return;
+        long totalX = 0, totalY = 0;
+        const bool raw = Window::RawMouseTotal(totalX, totalY) && Settings::Get().rawMouse;
+        if (!g_mouseHeld.load())
+        {
+            // Not steering: keep the total's place up to date so the movement
+            // from the menu is never handed over as one lurch on entry.
+            seenX = totalX;
+            seenY = totalY;
+            givenX = givenY = 0;
+            return;
+        }
 
         long dx = 0, dy = 0;
         if (raw)
         {
-            dx = rawX;
-            dy = rawY;
+            // What has arrived since this share of the total was last read.
+            dx = totalX - seenX;
+            dy = totalY - seenY;
+            seenX = totalX;
+            seenY = totalY;
             // The pointer is still put back in the middle: it is hidden and
             // nothing reads it, but a click has to land in the window and it
             // must never come to rest against an edge of the screen.
@@ -156,51 +188,124 @@ namespace
             if (dx != 0 || dy != 0) SetCursorPos(g_centre.x, g_centre.y);
         }
 
-        // COD3_MOUSELOG=1: what the look took, once a second, to see that
-        // the mouse's own counts arrive and how many a turn is worth.
-        static const bool log = getenv("COD3_MOUSELOG") != nullptr;
-        if (log && (dx != 0 || dy != 0))
+        // This read's share, waiting to be published.
+        static long pendingX = 0, pendingY = 0;
+        pendingX += dx;
+        pendingY += dy;
+
+        // Published on the title's frame boundary, so both asks in one frame
+        // read the same deflection and a whole frame's movement is applied
+        // together rather than split between two asks at two moments.
+        const uint64_t swap = RenderInternal::Swaps();
+        if (swap != lastSwap)
         {
-            static uint64_t second = 0, counts = 0, reads = 0;
-            counts += uint64_t(std::abs(dx) + std::abs(dy));
-            reads++;
-            const uint64_t now = GetTickCount64() / 1000;
-            if (now != second)
-            {
-                second = now;
-                printf("input: %s, %llu counts over %llu reads\n", raw ? "the mouse's own movement" : "the pointer's travel",
-                    (unsigned long long)counts, (unsigned long long)reads);
-                fflush(stdout);
-                counts = 0; reads = 0;
-            }
+            lastSwap = swap;
+            givenX = pendingX;
+            givenY = pendingY;
+            pendingX = pendingY = 0;
         }
+        dx = givenX;
+        dy = givenY;
 
         // A stick's deflection is a speed: the title turns by it times its
-        // frame's time, and reads the pad once a frame (twice, the second
-        // read a moment after the first). The distance the mouse went since
-        // the read before is a speed only at one frame rate, so taken as it
-        // is, the turn would slow down as the frame rate went up (at 100 a
-        // second to 60 per cent of the turn at 60). It is scaled to the
-        // distance over a sixtieth of a second, the rate the gain was set
-        // at, so a sweep of the hand is the same turn at any frame rate.
-        // The read that comes straight after another is left as it is: what
-        // it carries is the crumb in between.
+        // frame's time. What is published is the movement of one whole frame,
+        // so it is put on the scale of a sixtieth of a second - the rate the
+        // gain was set at - and a sweep of the hand is the same turn whether
+        // the frame it landed in was a sixtieth of a second long or a
+        // two-hundredth. This matters more than it looks: the title runs at
+        // 60 frames a second in the menus and at 200 and more in a level, so
+        // a gain that was right for one is three times too slow in the other.
+        //
+        // The frame's length is measured where the swap count changes and
+        // nowhere else. Measuring it between reads does not work, because the
+        // title asks twice a frame and half of those gaps are the width of a
+        // moment: a scale built from them swings by the length of a frame.
         double scale = 1.0;
         {
-            static auto lastRead = std::chrono::steady_clock::now();
-            const auto now = std::chrono::steady_clock::now();
-            const double interval = std::chrono::duration<double>(now - lastRead).count();
-            lastRead = now;
-            if (interval >= 0.002) scale = (1.0 / 60.0) / std::min(interval, 0.05);
+            static double secondsPerFrame = 1.0 / 60.0;
+            static uint64_t timedSwap = uint64_t(-1);
+            // Timed once per frame, at the boundary, and then reused by every
+            // read in that frame. The first frame after a long gap - a stall,
+            // a pause, the game not running at all - leaves the last good rate
+            // alone rather than dividing by the gap.
+            if (swap != timedSwap)
+            {
+                static auto lastFrame = std::chrono::steady_clock::now();
+                const auto now = std::chrono::steady_clock::now();
+                const double seconds = std::chrono::duration<double>(now - lastFrame).count();
+                lastFrame = now;
+                timedSwap = swap;
+                // Under half a millisecond is not a frame, and over a
+                // fiftieth of a second is a stall rather than a slow frame.
+                // Either way the rate from before is the better guess.
+                if (seconds >= 0.0005 && seconds <= 0.05)
+                {
+                    // Smoothed, so one short frame in a run of long ones does
+                    // not move the gain and then move it back.
+                    secondsPerFrame += (seconds - secondsPerFrame) * 0.25;
+                }
+            }
+            scale = (1.0 / 60.0) / secondsPerFrame;
         }
 
         // The settings menu's sensitivity scales the gain, both axes alike.
-        const double gain = 1300.0 * Settings::Get().mouseSensitivity * scale;
+        //
+        // The gain is set so a hard flick reaches full deflection and an
+        // ordinary movement does not. It used to be 1300, which pinned the
+        // stick after 57 counts. A mouse reports one to three counts per
+        // millimetre, so 57 counts is under two millimetres of travel, and
+        // every movement past that arrived at the title as the same maximum -
+        // a twitch and a fast sweep indistinguishable, with no fine aim
+        // anywhere between them. COD3_MOUSELOG counted it: every movement in
+        // a second arriving pinned at 32767.
+        //
+        // 80 puts full deflection at about 410 counts, a flick of a few
+        // centimetres, which leaves a slow deliberate aim at around a quarter
+        // of the stick and a fast sweep below the clamp. The sensitivity
+        // setting moves it from there.
+        const double gain = 80.0 * Settings::Get().mouseSensitivity * scale;
         const long x = long(std::clamp(double(dx) * gain, -32767.0, 32767.0));
         // Screen coordinates grow downwards and a stick grows upwards.
         const long y = long(std::clamp(-double(dy) * gain, -32767.0, 32767.0));
         outX = int16_t(x);
         outY = int16_t(y);
+
+        // COD3_MOUSELOG=1: what the look took, once a second. Both the counts
+        // the mouse's device reported and the stick the title was given,
+        // because the gain between them is where a mouse that feels wrong is
+        // wrong: a gain far too high puts ordinary movement into the clamp,
+        // where a twitch and a fast sweep both arrive as full deflection and
+        // neither can be aimed with. The frame time is here too, since it
+        // scales the movement and the title runs at sixty frames a second in
+        // the menus and two hundred in a level.
+        static const bool log = getenv("COD3_MOUSELOG") != nullptr;
+        if (log)
+        {
+            static uint64_t second = 0, counts = 0, reads = 0, peak = 0, pinned = 0, frames = 0;
+            static uint64_t lastLoggedSwap = uint64_t(-1);
+            if (dx != 0 || dy != 0)
+            {
+                counts += uint64_t(std::abs(dx) + std::abs(dy));
+                reads++;
+                const long biggest = std::abs(x) > std::abs(y) ? std::abs(x) : std::abs(y);
+                if (uint64_t(biggest) > peak) peak = uint64_t(biggest);
+                if (biggest >= 32767) pinned++;
+            }
+            const uint64_t nowSwap = RenderInternal::Swaps();
+            if (nowSwap != lastLoggedSwap) { lastLoggedSwap = nowSwap; frames++; }
+
+            const uint64_t now = GetTickCount64() / 1000;
+            if (now != second)
+            {
+                second = now;
+                printf("input: %s, %llu counts, %llu reads, %llu frames, peak stick %llu of 32767, %llu pinned, frame %.2f ms\n",
+                    raw ? "the mouse's own movement" : "the pointer's travel",
+                    (unsigned long long)counts, (unsigned long long)reads, (unsigned long long)frames,
+                    (unsigned long long)peak, (unsigned long long)pinned, scale * 1000.0 / 60.0);
+                fflush(stdout);
+                counts = 0; reads = 0; peak = 0; pinned = 0; frames = 0;
+            }
+        }
     }
 
     // One step of the menu highlight for each stretch of mouse movement.
