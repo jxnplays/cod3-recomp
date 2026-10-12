@@ -312,6 +312,10 @@ inline void* cod3_guest_ptr(uint32_t addr)
 // Directory the guest's files are resolved beneath. Set by the launcher.
 void cod3_set_game_root(const std::string& root);
 
+// Print the display subsystem's state. Called on a crash so a fault in the
+// display layer can be read against what it had actually set up.
+void cod3_display_state_summary();
+
 // Allocate guest-visible memory from the guest heap bump. Distinct from
 // cod3_heap_alloc, which serves the loader's private 64 KiB region.
 void* cod3_guest_alloc(uint32_t bytes, const char* what);

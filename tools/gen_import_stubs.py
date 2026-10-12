@@ -29,6 +29,14 @@ HAND_IMPLEMENTED = {
     # they are the critical path to anything being visible at all. Signatures
     # were measured from the call sites, not assumed.
     "NtCreateFile", "NtClose", "NtReadFile", "NtWriteFile",
+    # display subsystem - these share one state object rather than being
+    # independent stubs; see src/runtime/display_subsystem.cpp
+    "VdInitializeEngines", "VdShutdownEngines", "VdInitializeRingBuffer",
+    "VdGetSystemCommandBuffer",
+    "VdSetSystemCommandBufferGpuIdentifierAddress",
+    "VdSetGraphicsInterruptCallback",
+    "VdEnableRingBufferRPtrWriteBack",
+    "VdEnableDisableClockGating", "VdCallGraphicsNotificationRoutines",
     "NtFlushBuffersFile", "NtQueryInformationFile", "NtSetInformationFile",
     # critical sections
     "RtlInitializeCriticalSection", "RtlInitializeCriticalSectionAndSpinCount",

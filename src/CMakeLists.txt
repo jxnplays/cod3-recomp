@@ -83,6 +83,7 @@ add_library(recompiled_call_of_duty_3 STATIC
     runtime/heap_grow_method.cpp
     runtime/gpu_command_processor.cpp
     runtime/nt_file_io.cpp
+    runtime/display_subsystem.cpp
     runtime/kernel_imports_core.cpp
     runtime/mm_physical.cpp
     runtime/ppc_runtime.cpp

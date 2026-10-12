@@ -458,6 +458,7 @@ void cod3_install_crash_handler()
         cod3_report_guest_entries();
         cod3_report_heap_tolerance();
         cod3_report_gpu_stream();
+        cod3_display_state_summary();
         cod3_dump_heap_slots();
         std::fflush(stderr);
 
