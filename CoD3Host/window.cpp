@@ -47,6 +47,10 @@ namespace
     // Frames the guest finished, counted where the front buffer changes.
     std::atomic<uint64_t> g_guestFrames{ 0 };
 
+    // COD3_MOUSELOG=1: how fast the message pump goes round, which is the
+    // floor on how quickly the mouse can reach the look.
+    const bool pumpLog = getenv("COD3_MOUSELOG") != nullptr;
+
     bool g_borderless = false;
     WINDOWPLACEMENT g_placement{};
     std::atomic<bool> g_toggleWanted{ false };   // Alt+Enter
@@ -289,6 +293,32 @@ namespace
             // the latency and how often this loop can present.
             if (Input::MouseHeld()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
             else std::this_thread::sleep_for(std::chrono::milliseconds(8));
+
+            // How often this loop actually gets round, which is the whole of
+            // the delay between the mouse moving and the look having it: the
+            // counts sit on the queue until this loop runs. Printed because
+            // it is otherwise invisible, and because the loop also presents a
+            // frame, so the time spent waiting on that is added to the wait.
+            // With COD3_MOUSELOG, which is when the look is being looked at.
+            if (pumpLog)
+            {
+                static uint64_t pumps = 0, second = 0;
+                static auto lastPump = std::chrono::steady_clock::now();
+                pumps++;
+                const uint64_t tick = GetTickCount64() / 1000;
+                if (tick != second)
+                {
+                    second = tick;
+                    const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - lastPump).count();
+                    lastPump = std::chrono::steady_clock::now();
+                    printf("input: the message pump went round %llu times a second,"
+                           " every %.2f ms, while the mouse steers\n",
+                        (unsigned long long)pumps, ms / double(pumps));
+                    fflush(stdout);
+                    pumps = 0;
+                }
+            }
         }
 
         g_window.store(nullptr);
