@@ -9,6 +9,7 @@
 
 #include "kernel.h"
 #include "window.h"
+#include "input.h"
 #include "overlay.h"
 #include "settings.h"
 #include "render.h"
@@ -271,7 +272,23 @@ namespace
             }
 
             Render::PresentIdle();
-            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+
+            // How long this loop waits decides how far the mouse lags the
+            // hand: the counts are not read where they arrive, the driver
+            // puts a message on the queue and it is taken off here. A loop
+            // that sleeps delivers the mouse in bursts a sleep apart, so a
+            // circle drawn with the hand comes out trailing behind it - the
+            // camera sliding rather than tracking.
+            //
+            // While the mouse is steering the wait is cut to a millisecond,
+            // not removed. Removing it and spinning on yield was tried and
+            // cost the run: this loop presents as well as pumps, and
+            // presenting thousands of times a second takes the swap chain
+            // down - the title died at fifty eight seconds, the log ending
+            // mid-frame with nothing wrong in it. A millisecond bounds both
+            // the latency and how often this loop can present.
+            if (Input::MouseHeld()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            else std::this_thread::sleep_for(std::chrono::milliseconds(8));
         }
 
         g_window.store(nullptr);
