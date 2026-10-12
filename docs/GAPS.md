@@ -37,23 +37,40 @@ FFmpeg headers the build had been reporting missing — see `scripts/get_ffmpeg_
 
 ---
 
-## Measured, and the clearest real constraint
+## Measured over a ten minute run
 
-**Both heaps are exhausted.**
+Our build, from our own source, against a full game dump:
 
 ```
+[ 629s] fps 60  frames 37741  files 39 (46.8 MB read)  threads 37
+         allocated 489.0 MB  audio 117838  packets 15407101  draws 2112051
+
+xma:   1 contexts, 127976 enables, 7670 packets decoded, 0 refused, 511820 blocks written
+audio: 117836 frames played, 2 dropped, loudest sample 39.3% of full scale
 heaps: physical 455.1 of 511.0 MB handed out, 0.0 MB free in 0 ranges
        virtual  16.0 of 752.0 MB, 0.0 MB free in 0 ranges
 ```
 
-Zero free in **zero** ranges, which is a different statement from "almost full" —
-there is no fragmentation slack to reclaim, and nothing is being handed back. The
-physical heap is at 89% of the 511 MB the title believes the console has.
+It reaches the **main menu** and holds **60 fps** there, decoding audio, for ten
+minutes without degradation. A frame captured through the title's own screenshot
+path shows the front end rendering from the game's own shaders.
 
-This is the first thing to investigate. It bounds everything else: a title that
-cannot allocate cannot keep its textures resident, and the fix may be reclamation
-rather than capacity. It also plausibly explains part of why our build reads
-fewer files than the upstream prebuilt did in the same wall-clock time.
+### The heaps: not the emergency it looked like
+
+Both heaps report `0.0 MB free in 0 ranges`, and the physical heap sits at 89% of
+the 511 MB the title believes the console has. That reads like exhaustion, and
+this file said so before the long run.
+
+It is not, at least not yet. Across the run `allocated` held at **489.0 MB** and
+the physical heap at **455.1 MB** — flat from the first minute to the tenth.
+Nothing grows and nothing leaks.
+
+What the zero does mean is that the allocator **never hands anything back**: zero
+free bytes in zero ranges says reclamation does not happen, not that there is no
+memory. So it is a standing ceiling rather than a fault, and it sits lower in the
+order than it first appeared. It becomes urgent when a level allocates more than
+the menu does — which is the next measurement worth taking, and it needs a long
+run through an actual level rather than the front end.
 
 ---
 
@@ -129,15 +146,19 @@ more likely limiter.
 
 ## Ordered by what unblocks the most
 
-1. **Heap reclamation.** Both heaps at zero free with nothing returned. Everything
-   else is bounded by this.
-2. **Sampler binding for ordinary draws.** One grep to resolve; decides whether
-   texture filtering is a real gap or a misreading.
-3. **Format census from a run.** The runtime already counts them; collect the list
-   instead of guessing which are missing.
-4. **Verification for the 18 added instructions.** Expensive, and it is what makes
-   every other visual fix trustworthy.
-5. **Exception support.** Toolchain work; defer until the above are settled.
+1. **Verification for the 18 added instructions.** Expensive, and it is what makes
+   every other visual fix trustworthy. Everything visual rests on it.
+2. **Format census from a run.** The runtime already counts formats it does not
+   handle; collect the list instead of guessing which are missing.
+3. **A run through an actual level, not the menu.** The heap ceiling is flat at
+   the front end; whether it holds under a level's allocations decides how urgent
+   heap reclamation is.
+4. **Exception support.** Toolchain work rather than host work; defer.
+
+The first two measured items turned out not to be gaps at all — depth, blending,
+filtering and audio are all implemented and working. That is worth saying plainly:
+the inherited notes understated this codebase, and the next corrections may
+understate it further.
 
 Nothing on this list is on the remaster feature roadmap yet — settings menu,
 modern options, ultrawide. Those are additions on top of a correct base, and
