@@ -22,6 +22,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -134,6 +135,7 @@ namespace
         std::string mnemonic;
         std::vector<std::string> operands;
         bool hasInstruction = false;
+        bool isData = false;              // a .long: a word, not an instruction
     };
 
     // Splits an operand list. A load or store writes its displacement and base
@@ -176,6 +178,207 @@ namespace
         return expanded;
     }
 
+    // --- macros ------------------------------------------------------------------------------------
+
+    // Xenia's tests do not write the instructions that build a 64-bit constant,
+    // because that is seven instructions to assert one register. They define a
+    // macro that builds it from four halves and call that instead:
+    //
+    //     .macro make_full_test_constant dest, a, b, c, d
+    //       lis \dest, \a
+    //       ori \dest, \dest, \b
+    //       sldi \dest, \dest, 32
+    //       ...
+    //     .endm
+    //
+    //     make_full_test_constant r4, 0x0123, 0x4567, 0x89AB, 0xCDEF
+    //
+    // Roughly twenty instructions have such a `_constant` test, and every one
+    // of them reads 0 without this: the call assembles to nothing, so the
+    // register the test then checks was never written. Forty failing checks
+    // that all say `ACTUAL 0` is one missing feature, not forty bugs.
+    struct Macro
+    {
+        std::vector<std::string> parameters;
+        std::vector<std::string> body;    // raw source, parameters still written \like_this
+    };
+
+    std::string Head(const std::string& text)
+    {
+        const size_t space = text.find_first_of(" \t");
+        return space == std::string::npos ? text : text.substr(0, space);
+    }
+
+    // Replaces \parameter with the argument it was given.
+    //
+    // The longest parameter name wins, and it has to. The constants macro's
+    // parameters include `d` while its body also says `\dest`, so matching `d`
+    // first would turn `\dest` into `0xCDEFest` and every test that uses the
+    // macro would fail on a register that is nonsense.
+    std::string Substitute(const std::string& text,
+                          const std::vector<std::string>& parameters,
+                          const std::vector<std::string>& arguments)
+    {
+        std::string out;
+        for (size_t i = 0; i < text.size();)
+        {
+            if (text[i] != '\\' || i + 1 >= text.size()) { out += text[i++]; continue; }
+
+            size_t best = std::string::npos;
+            for (size_t p = 0; p < parameters.size(); ++p)
+            {
+                const std::string& name = parameters[p];
+                if (name.empty() || text.compare(i + 1, name.size(), name) != 0) continue;
+                if (best == std::string::npos || name.size() > parameters[best].size()) best = p;
+            }
+            if (best == std::string::npos) { out += text[i++]; continue; }
+
+            if (best < arguments.size()) out += arguments[best];
+            i += 1 + parameters[best].size();
+        }
+        return out;
+    }
+
+    // A macro's name and its arguments, out of one line.
+    //
+    // The arguments come back comma-separated, but the name is not: in
+    // `.macro make_full_test_constant dest, a, b, c, d` the first chunk is
+    // "make_full_test_constant dest", the name and the first parameter sharing
+    // a run with no comma in it. Read the whole chunk as one argument and the
+    // macro is registered under the name "make_full_test_constant dest", no
+    // call ever matches it, and every test that uses it reads zero.
+    struct Signature
+    {
+        std::string name;
+        std::vector<std::string> arguments;
+    };
+
+    Signature ReadSignature(const std::string& text)
+    {
+        Signature out;
+        const size_t space = text.find_first_of(" \t");
+        if (space == std::string::npos) { out.name = Lower(Trim(text)); return out; }
+
+        out.name = Lower(Trim(text.substr(0, space)));
+        std::vector<std::string> chunks = SplitOperands(Trim(text.substr(space + 1)));
+        for (std::string& chunk : chunks) chunk = Lower(Trim(chunk));
+        out.arguments = chunks;
+        return out;
+    }
+
+    // Takes the `.macro` blocks out of the source and puts the calls to them in
+    // their place, before anything is parsed: the body lines are source text
+    // and are only text until the parameters are gone.
+    std::vector<std::string> Preprocess(const std::vector<std::string>& raw)
+    {
+        std::map<std::string, Macro> macros;
+        std::vector<std::string> kept;
+        std::vector<std::string> body;
+        std::string open;
+        std::vector<std::string> parameters;
+        bool inComment = false;
+
+        for (const std::string& line : raw)
+        {
+            std::string text = line;
+
+            // Two kinds of comment. The test annotations start with # and are
+            // read by XenonRecomp, not here. A few sources use /* */ as well,
+            // including the ones that open a comment on one line and close it
+            // on the next, which is why the state has to be outside the loop.
+            if (inComment)
+            {
+                const size_t ends = text.find("*/");
+                if (ends == std::string::npos) continue;
+                text = text.substr(ends + 2);
+                inComment = false;
+            }
+            const size_t opens = text.find("/*");
+            if (opens != std::string::npos)
+            {
+                const size_t ends = text.find("*/", opens + 2);
+                if (ends == std::string::npos) { text = text.substr(0, opens); inComment = true; }
+                else text = text.substr(0, opens) + " " + text.substr(ends + 2);
+            }
+
+            const size_t hash = text.find('#');
+            if (hash != std::string::npos) text = text.substr(0, hash);
+            text = Trim(text);
+
+            if (!open.empty())
+            {
+                const std::string head = Lower(Head(text));
+                if (head == ".endm" || head == ".endmacro")
+                {
+                    macros[open] = Macro{ parameters, body };
+                    open.clear();
+                    parameters.clear();
+                    body.clear();
+                    continue;
+                }
+                if (!text.empty()) body.push_back(text);
+                continue;
+            }
+
+            const std::string head = Lower(Head(text));
+            if (head == ".macro")
+            {
+                const size_t space = text.find_first_of(" \t");
+                if (space == std::string::npos) { kept.push_back(text); continue; }
+                const Signature signature = ReadSignature(text.substr(space + 1));
+                if (signature.name.empty()) { kept.push_back(text); continue; }
+                open = signature.name;
+                parameters = signature.arguments;
+                continue;
+            }
+
+            kept.push_back(text);
+        }
+
+        // A block left open means the source ended inside a macro. Keeping its
+        // lines as ordinary source would turn them into unknown instructions,
+        // which is what would have happened anyway, but saying so once is
+        // clearer than sixty identical errors.
+        if (!open.empty())
+            fprintf(stderr, "warning: .macro %s is never closed with .endm\n", open.c_str());
+
+        // Expand outermost first, until a pass changes nothing. The cap stops a
+        // macro that expands to a call to itself from running forever.
+        for (int round = 0; round < 8; ++round)
+        {
+            bool changed = false;
+            std::vector<std::string> next;
+            for (const std::string& text : kept)
+            {
+                const std::string head = Lower(Head(text));
+                const Macro* found = macros.count(head) ? &macros[head] : nullptr;
+                if (found == nullptr) { next.push_back(text); continue; }
+
+                // The call's arguments are everything after the name. A macro
+                // that takes one argument has no comma in it at all - the call
+                // is `make_test_constant r4` - so this cannot go through
+                // ReadSignature, which would read `r4` as the name and hand
+                // back nothing to substitute, leaving every line of the body
+                // with an empty operand where \dest should be.
+                const size_t space = text.find_first_of(" \t");
+                std::vector<std::string> arguments;
+                if (space != std::string::npos)
+                {
+                    arguments = SplitOperands(Trim(text.substr(space + 1)));
+                    for (std::string& a : arguments) a = Trim(a);
+                }
+
+                for (const std::string& b : found->body)
+                    next.push_back(Substitute(b, found->parameters, arguments));
+                changed = true;
+            }
+            kept.swap(next);
+            if (!changed) break;
+        }
+
+        return kept;
+    }
+
     bool ParseLine(const std::string& raw, int number, Line& out)
     {
         out = Line{};
@@ -208,7 +411,23 @@ namespace
             out.mnemonic = Lower(text.substr(0, space));
             out.operands = SplitOperands(Trim(text.substr(space + 1)));
         }
+
+        // Directives that describe the object file rather than the machine
+        // code. They have no encoding and no four bytes, so they are dropped
+        // rather than read as an unknown instruction and turned into a nop
+        // that moves every label after it four bytes along.
+        static const std::set<std::string> directives = {
+            ".text", ".globl", ".global", ".type", ".size", ".section",
+            ".align", ".balign", ".p2align", ".byte", ".half", ".word",
+            ".dword", ".quad", ".space", ".file", ".ident", ".extern",
+            ".previous", ".local", ".weak", ".hidden", ".set",
+        };
+        if (directives.count(out.mnemonic) != 0) return true;
+
         out.hasInstruction = true;
+        // A .long is a word in the stream, not an instruction. It still has to
+        // occupy four bytes so the labels after it land where Xenia put them.
+        out.isData = out.mnemonic == ".long";
         return true;
     }
 
@@ -243,12 +462,229 @@ namespace
 
 namespace
 {
+    // Rewrites PowerPC's extended mnemonics into the rotate-and-mask forms the
+    // hardware actually has.
+    //
+    // The Xenos has no 64-bit shift. `sldi rD,rS,n` is `rldicr rD,rS,n,64-n` and
+    // `srdi rD,rS,n` is `rldicl rD,rS,64-n,n`: a rotate by the other way, then a
+    // mask from the other end, which between them is a shift.
+    //
+    // These are not optional. Xenia's `_constant` tests - one for nearly every
+    // instruction - build a 64-bit value with `li` and then `sldi` it into place.
+    // Without this the assembler emits a nop for the shift, the test reads a
+    // register that was never shifted, and around forty tests fail for a reason
+    // that has nothing to do with the recompiler. A nop that is reported is still
+    // a wrong answer, so it is better to assemble them.
+    bool ExpandExtended(Line& line, std::string& why)
+    {
+        // The move is the only rename. Comparisons deliberately are not in
+        // here: the table carries `cmp` itself as {BF, L, RA, RB}, so
+        // `cmp 5, 0, r3, r4` - a condition register, its bit, and the two
+        // operands - is four operands and finds its own entry. Rewriting it to
+        // `cmpw`, which takes three, refuses it.
+        static const std::map<std::string, std::string> renamed = {
+            { "mr", "or" },
+        };
+        const auto rename = renamed.find(line.mnemonic);
+        if (rename != renamed.end())
+        {
+            // `mr rA,rS` is `or rA,rS,rS`: the move is the same instruction as
+            // the or, with its second and third sources the same register.
+            if (line.operands.size() == 2)
+                line.operands.push_back(line.operands[1]);
+            line.mnemonic = rename->second;
+            return true;
+        }
+
+        // `subis rD,rS,n` is `addis` on the negative of n: it subtracts, where
+        // `addis` on the same n would add. Renaming it without flipping the
+        // immediate encodes the opposite instruction - and passes the read-back
+        // check, because the bytes really are an `addis`. Only the result tells
+        // the difference.
+        if (line.mnemonic == "subis")
+        {
+            if (line.operands.size() == 3)
+            {
+                int64_t amount = 0;
+                if (ParseOperandText(line.operands[2], amount))
+                {
+                    // The immediate is a 16-bit field, so the negation is done
+                    // in 16 bits and -32768 comes back as -32768 rather than
+                    // becoming 32768.
+                    const int16_t flipped = static_cast<int16_t>(-amount);
+                    line.operands[2] = std::to_string(flipped);
+                    line.mnemonic = "addis";
+                    return true;
+                }
+            }
+            why = "subis takes 3 operands with a number for the immediate";
+            return false;
+        }
+
+        // The Xenos unpacks into a 128-bit vector with two operands,
+        // `vupkhsb128 vD, vB`, where the PowerPC instruction the table
+        // describes takes three, `vD, vA, vB`. The middle source is not
+        // optional there: it is a real register that the unpack does not read
+        // but the encoding still has to carry, and it is zero.
+        //
+        // Only the 128-bit forms. The 64-bit ones - `vupkhsb`, `vupkhsh` and
+        // the rest - genuinely take two operands in the table too, and giving
+        // them a third is how the 128-bit list came to be wrong in the first
+        // place.
+        static const std::set<std::string> twoOperandUnpack = {
+            "vupkhsb128", "vupklsb128", "vupkhsb64", "vupklsb64",
+            "vupkhsh128", "vupklsh128", "vupkdh128", "vupkdl128",
+        };
+        if (line.operands.size() == 2 && twoOperandUnpack.count(line.mnemonic))
+        {
+            line.operands.insert(line.operands.begin() + 1, "0");
+            return true;
+        }
+
+        const bool left = line.mnemonic == "sldi";
+        const bool right = line.mnemonic == "srdi";
+        const bool clear = line.mnemonic == "clrldi";
+        const bool rotate = line.mnemonic == "rotldi";
+        const bool left32 = line.mnemonic == "slwi";
+        const bool right32 = line.mnemonic == "srwi";
+        if (!left && !right && !clear && !rotate && !left32 && !right32) return true;
+
+        if (line.operands.size() != 3)
+        {
+            why = line.mnemonic + " takes 3 operands, got " +
+                  std::to_string(line.operands.size());
+            return false;
+        }
+
+        int64_t amount = 0;
+        if (!ParseOperandText(line.operands[2], amount) || amount < 0 || amount > 63)
+        {
+            why = "bad shift count for " + line.mnemonic + ": " + line.operands[2];
+            return false;
+        }
+
+        const std::string destination = line.operands[0];
+        const std::string source = line.operands[1];
+        const std::string count = std::to_string(amount);
+
+        // A count of nothing has no rotate to hide the mask behind: 64-0 is 64,
+        // and the mask fields are five bits wide. Every one of these becomes a
+        // move when it shifts by zero, so that is what it becomes.
+        if (amount == 0)
+        {
+            line.mnemonic = "or";
+            line.operands = { destination, source, source };
+            return true;
+        }
+
+        if (left)
+        {
+            line.mnemonic = "rldicr";
+            line.operands = { destination, source, count, std::to_string(64 - amount) };
+        }
+        else if (right)
+        {
+            line.mnemonic = "rldicl";
+            line.operands = { destination, source, std::to_string(64 - amount), count };
+        }
+        else if (clear)
+        {
+            // Clear the low n bits: rotate by nothing, then mask from bit n up.
+            line.mnemonic = "rldicl";
+            line.operands = { destination, source, "0", count };
+        }
+        else if (rotate)
+        {
+            // Rotate by n and keep everything: rotate by n, then mask from
+            // bit zero, which is no mask.
+            line.mnemonic = "rldicl";
+            line.operands = { destination, source, count, "0" };
+        }
+        else if (left32)
+        {
+            // A 32-bit shift left is a 32-bit rotate that keeps the low
+            // 32-n bits: rlwinm takes the leftmost bit as bit 31, so the
+            // window that survives runs from bit 0 to bit 31-n.
+            line.mnemonic = "rlwinm";
+            line.operands = { destination, source, count, "0",
+                              std::to_string(31 - amount) };
+        }
+        else
+        {
+            // A 32-bit shift right is the same rotate the other way round,
+            // with the window moved up to bits n through 31.
+            line.mnemonic = "rlwinm";
+            line.operands = { destination, source, std::to_string(32 - amount),
+                              count, "31" };
+        }
+        return true;
+    }
+
+    // One encoding, several names. Every entry here is a case where the bytes
+    // are right and only the name the disassembler picked differs, so the
+    // read-back check below must not report them.
+    //
+    // Three kinds live here. The comparisons, where the table names the
+    // register form `cmpw` and the sources write `cmp`. The shifts, which the
+    // hardware does not have: `sldi` is a rotate and a mask, and the table has
+    // no name for the pair. And the traps, where `twnl` ("not less") and
+    // `twge` ("greater or equal") are the same condition with names that
+    // disagree about which way round they are.
+    bool SameInstruction(const std::string& written, const std::string& decoded)
+    {
+        if (written == decoded) return true;
+        static const std::map<std::string, std::vector<std::string>> aliases = {
+            { "cmpi",      { "cmpwi" } },
+            { "lbzi",      { "lbz" } },
+            { "addis",     { "lis" } },
+            { "subis",     { "addis" } },
+            { "nor.",      { "not." } },
+            { "sldi",      { "rldicr" } },
+            { "srdi",      { "rldicl", "mr" } },
+            { "slwi",      { "rotlwi" } },
+            { "srwi",      { "rotrwi" } },
+            { "rldicl",    { "rotldi", "clrldi", "rotldi.", "clrldi." } },
+            { "rldicr",    { "rotrdi" } },
+            { "rlwinm",    { "rotlwi" } },
+            { "rlwnm",     { "rotlw" } },
+            // not-less and greater-or-equal are the same test
+            { "twnl",      { "twge" } },
+            { "twng",      { "twle" } },
+            { "twnli",     { "twgei" } },
+            { "twngi",     { "twlei" } },
+            { "twlnl",     { "twlge" } },
+            { "twlng",     { "twlle" } },
+            { "twlnli",    { "twlgei" } },
+            { "twlngi",    { "twllei" } },
+            { "tdnl",      { "tdge" } },
+            { "tdng",      { "tdle" } },
+            { "tdnli",     { "tdgei" } },
+            { "tdngi",     { "tdlei" } },
+            { "tdlnl",     { "tdlge" } },
+            { "tdlng",     { "tdlle" } },
+            { "tdlnli",    { "tdlgei" } },
+            { "tdlngi",    { "tdllei" } },
+        };
+        const auto alias = aliases.find(written);
+        if (alias == aliases.end()) return false;
+        for (const std::string& name : alias->second) if (name == decoded) return true;
+        return false;
+    }
+
     struct Assembler
     {
         std::map<std::string, uint32_t> labels;
         uint32_t base = 0x82010000;
         std::vector<uint32_t> code;          // host order, big endian on write
         std::vector<std::string> errors;
+
+        // Which table entry the last Encode matched. A wrong encoding is not
+        // always a wrong encoder: `or` appears in the opcode table more than
+        // once, and picking the wrong one of two gives a perfectly encoded
+        // instruction that is not the one that was written. Knowing which
+        // entry was chosen is the difference between that being a five minute
+        // fix and a guess, so it is kept and printed when the read-back fails.
+        const powerpc_opcode* lastMatch = nullptr;
 
         const powerpc_opcode* FindOpcode(const Line& line, std::string& why) const
         {
@@ -278,10 +714,33 @@ namespace
             return nullptr;
         }
 
-        bool Encode(const Line& line, uint32_t address, uint32_t& instruction, std::string& why)
+        bool Encode(const Line& source, uint32_t address, uint32_t& instruction, std::string& why)
         {
+            Line line = source;
+            if (!ExpandExtended(line, why)) return false;
+
+            // A .long is the word written literally. It goes into the stream so
+            // the addresses after it stay right, and nowhere near the tables.
+            if (line.isData)
+            {
+                if (line.operands.size() != 1)
+                {
+                    why = ".long takes 1 operand, got " + std::to_string(line.operands.size());
+                    return false;
+                }
+                int64_t value = 0;
+                if (!ParseOperandText(line.operands[0], value))
+                {
+                    why = "cannot read a word from .long " + line.operands[0];
+                    return false;
+                }
+                instruction = static_cast<uint32_t>(value);
+                return true;
+            }
+
             const powerpc_opcode* opcode = FindOpcode(line, why);
             if (opcode == nullptr) return false;
+            lastMatch = opcode;
 
             unsigned long value = opcode->opcode;
             const int given = static_cast<int>(line.operands.size());
@@ -484,13 +943,20 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::vector<Line> lines;
+    std::vector<std::string> source;
     std::string raw;
+    while (std::getline(input, raw)) source.push_back(raw);
+
+    // Macros are expanded before anything is parsed, because the body of a
+    // macro is source text and is only text until its parameters are gone.
+    source = Preprocess(source);
+
+    std::vector<Line> lines;
     int number = 0;
-    while (std::getline(input, raw))
+    for (const std::string& text : source)
     {
         Line line;
-        ParseLine(raw, ++number, line);
+        ParseLine(text, ++number, line);
         lines.push_back(line);
     }
 
@@ -521,16 +987,51 @@ int main(int argc, char** argv)
             continue;
         }
 
+        // A .long is data. It takes up its four bytes so the labels after it
+        // land where the source says, but there is nothing to disassemble it
+        // back into, so the read-back check below does not apply.
+        if (line.isData)
+        {
+            assembler.code.push_back(instruction);
+            address += 4;
+            encoded++;
+            continue;
+        }
+
         // The encoding is only trusted if the project's own disassembler reads
         // it back as the same instruction.
+        //
+        // "The same" has to mean the same ENCODING, not the same NAME. The
+        // disassembler picks whichever table entry matches first, and it picks
+        // the wrong one for `or r3,r3,r3`: the word 0x7C631B78 is exactly
+        // XRC(31,444,0) - the table's own `or` - with RS, RA and RB all 3, and
+        // the decoder calls it `cctph`. Thirty of Xenia's tests end in that one
+        // instruction, so trusting the name alone reports thirty correct
+        // encodings as wrong and buries the real failures.
+        //
+        // So the word is also checked against the table entry the encoder
+        // meant to write. If it still matches that entry's mask, it is the
+        // instruction that was asked for and the decoder's name is the thing
+        // that is wrong. If it does not, the encoder produced something else
+        // and the mismatch is real.
         const uint32_t bigEndian = ByteSwap(instruction);
         ppc_insn decoded{};
         ppc::Disassemble(&bigEndian, address, decoded);
-        if (decoded.opcode == nullptr || line.mnemonic != decoded.opcode->name)
+        const char* readBack = decoded.opcode ? decoded.opcode->name : "<invalid>";
+
+        const bool namedRightly = decoded.opcode != nullptr &&
+                                  SameInstruction(line.mnemonic, readBack);
+        const bool wordIsRight = assembler.lastMatch != nullptr &&
+            (instruction & assembler.lastMatch->mask) == assembler.lastMatch->opcode;
+
+        if (!namedRightly && !wordIsRight)
         {
             fprintf(stderr, "%s:%d: encoded %s as 0x%08X but it reads back as %s\n",
-                inputPath, line.number, line.mnemonic.c_str(), instruction,
-                decoded.opcode ? decoded.opcode->name : "<invalid>");
+                inputPath, line.number, line.mnemonic.c_str(), instruction, readBack);
+            if (assembler.lastMatch != nullptr)
+                fprintf(stderr, "        matched table entry \"%s\", base 0x%08lX mask 0x%08lX\n",
+                    assembler.lastMatch->name, assembler.lastMatch->opcode,
+                    assembler.lastMatch->mask);
             mismatched++;
         }
 
