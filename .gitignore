@@ -35,3 +35,7 @@ shots/
 
 # Python bytecode.
 __pycache__/
+
+# FFmpeg headers, fetched by scripts/get_ffmpeg_headers.ps1. GPL; not ours to
+# redistribute, so they are not committed. See thirdparty/ffmpeg/README.md.
+thirdparty/ffmpeg/include/
