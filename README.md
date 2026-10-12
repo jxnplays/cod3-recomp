@@ -4,7 +4,7 @@
 
 <div align="center">
 
-**COD3** ![ANALYZED](https://img.shields.io/badge/ANALYZED-ffd60a?style=flat-square) ![XENON](https://img.shields.io/badge/XENON-4a4a3a?style=flat-square) ![19K+FUNCS](https://img.shields.io/badge/19.4K+FUNCS-8a7a2a?style=flat-square) ![BINARY](https://img.shields.io/badge/BINARY-ffd60a?style=flat-square) ![LOADS](https://img.shields.io/badge/LOADS-ffd60a?style=flat-square) ![KERNEL](https://img.shields.io/badge/KERNEL-4a4a3a?style=flat-square) ![RENDERS](https://img.shields.io/badge/RENDERS-5fd35f?style=flat-square) ![RENDERED](https://img.shields.io/badge/RENDERED-5fd35f?style=flat-square)
+![ANALYZED](https://img.shields.io/badge/ANALYZED-ffd60a?style=flat-square) ![XENON](https://img.shields.io/badge/XENON-4a4a3a?style=flat-square) ![19K+FUNCS](https://img.shields.io/badge/19.4K+FUNCS-8a7a2a?style=flat-square) ![BINARY](https://img.shields.io/badge/BINARY-ffd60a?style=flat-square) ![LOADS](https://img.shields.io/badge/LOADS-ffd60a?style=flat-square) ![KERNEL](https://img.shields.io/badge/KERNEL-4a4a3a?style=flat-square) ![RENDERS](https://img.shields.io/badge/RENDERS-5fd35f?style=flat-square) ![RENDERED](https://img.shields.io/badge/RENDERED-5fd35f?style=flat-square)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](https://learn.microsoft.com/en-us/windows/)
