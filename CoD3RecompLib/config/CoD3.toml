@@ -1,0 +1,147 @@
+# Call of Duty 3 (Xbox 360, USA/Europe) - XenonRecomp configuration
+# Single-player executable: default.xex
+#
+# Addresses below were located with tools/CoD3Scan against this exact XEX.
+# Image base 0x82000000, .text 0x820A0000..0x82578E8C, entry point 0x82344D00.
+
+[main]
+file_path = "../private/default.xex"
+out_directory_path = "../ppc"
+switch_table_file_path = "CoD3_switch_tables.toml"
+
+# No title update ships with this dump, so patch_file_path is intentionally absent.
+
+# --- Optimizations -----------------------------------------------------
+# All off for the first pass. The README is explicit: only enable these once
+# the recompilation actually runs, otherwise a miscompile is impossible to
+# attribute.
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+
+# --- Register save/restore helpers -------------------------------------
+# Found by byte-pattern scan; each pattern matched exactly once.
+restgprlr_14_address = 0x8234F2B0
+savegprlr_14_address = 0x8234F260
+restfpr_14_address   = 0x8234FA1C
+savefpr_14_address   = 0x8234F9D0
+restvmx_14_address   = 0x8234FD08
+savevmx_14_address   = 0x8234FA70
+restvmx_64_address   = 0x8234FD9C
+savevmx_64_address   = 0x8234FB04
+
+# --- setjmp / longjmp ---------------------------------------------------
+# longjmp: 0x8234EEC0..0x8234EFD4 per .pdata, calls RtlUnwind at 0x8234EFC0,
+#          restores f14-f31 / r13-r31 / CR / LR / SP from the jmp_buf in r7.
+# setjmp:  begins at 0x82351CC0 with a hook check (a pointer at 0x82BEAAF0
+#          is jumped to when set), then stores the same layout via r3 from
+#          0x82351CD4 and returns 0 at 0x82351D88. The seven bl callers name
+#          0x82351CC0; the address used to be the store at 0x82351CD4, which
+#          nothing calls, so no setjmp was ever the host's and the first
+#          longjmp of a level start went through an empty buffer.
+# jmp_buf layout: 0x00 f14-f31, 0x90 SP, 0x98 r13-r31, 0x130 CR, 0x134 LR,
+#                 0x138 unwind flag.
+longjmp_address = 0x8234EEC0
+setjmp_address  = 0x82351CC0
+
+# --- Explicit function boundaries -------------------------------------
+# XenonAnalyse's analyzer truncates a function at a jump-table `bctr`,
+# because the table data that follows does not decode as code. Each entry
+# below restores the real extent, derived by tools/CoD3Scan --fixfuncs from
+# the recompiler's own out-of-range switch reports, then bounded by the
+# end of each case body (its blr / unconditional branch). All starts were verified
+# to follow padding or a terminator instruction.
+#
+# That bound is wrong when the case bodies end in a branch to a shared
+# tail that lies after the last case: the tail is then cut off, the
+# recompiler marks each branch to it "ERROR" and returns instead, and the
+# function does nothing. The chapter title screen's text setter was one
+# (0x824C0CD8): the level's four lines were set and never reached the
+# panel. Four entries below are extended to the blr of their tails; grep
+# the generated code for "// ERROR" after a recompile to find any more.
+functions = [
+    { address = 0x820C76C0, size = 0x9C }, # was 0x24, 13 cases
+    { address = 0x820CED30, size = 0xB0 }, # was 0x20, 4 cases
+    { address = 0x820E7E10, size = 0x2C0 }, # was 0x20, 16 cases
+    { address = 0x820E80D8, size = 0x264 }, # was 0x20, 16 cases
+    { address = 0x820E8348, size = 0x358 }, # was 0x20, 16 cases
+    { address = 0x820E86A8, size = 0x248 }, # was 0x20, 16 cases
+    { address = 0x820E88F8, size = 0x358 }, # was 0x20, 16 cases
+    { address = 0x82121988, size = 0x68 }, # was 0x20, 8 cases
+    { address = 0x821232A0, size = 0xA0 }, # was 0x48, 6 cases
+    { address = 0x82123340, size = 0x64 }, # was 0x24, 4 cases
+    { address = 0x821255D0, size = 0x100 }, # was 0x58, 4 cases
+    { address = 0x8212AF30, size = 0xAC }, # was 0x20, 5 cases
+    { address = 0x821301A8, size = 0x88 }, # was 0x24, 5 cases
+    { address = 0x82140128, size = 0x530 }, # was 0x2C, 249 cases
+    { address = 0x82150210, size = 0xE8 }, # was 0x24, 8 cases
+    { address = 0x82150F18, size = 0x184 }, # was 0xF0, 9 cases
+    { address = 0x82154730, size = 0x44 }, # was 0x20, 5 cases
+    { address = 0x82154778, size = 0x4C }, # was 0x20, 5 cases
+    { address = 0x821548B0, size = 0x80 }, # was 0x20, 8 cases
+    { address = 0x82194F88, size = 0x2F4 }, # was 0x24, 105 cases
+    { address = 0x821D4078, size = 0x110 }, # was 0x2C, 12 cases
+    { address = 0x821D42D0, size = 0xC8 }, # was 0x20, 14 cases
+    { address = 0x821D43A0, size = 0x4D8 }, # was 0xE0, 179 cases; the compares after the table run to 0x821D4878
+    { address = 0x821D4920, size = 0x364 }, # was 0x3C, 177 cases
+    { address = 0x821FBE00, size = 0x228 }, # was 0x20, 95 cases
+    { address = 0x8220CFE8, size = 0xC8 }, # was 0x20, 12 cases
+    { address = 0x82271020, size = 0x380 }, # was 0x5C, 8 cases
+    { address = 0x8237B650, size = 0x8C }, # was 0x38, 8 cases
+    { address = 0x823816F0, size = 0x9C }, # was 0x20, 11 cases
+    { address = 0x82395C78, size = 0xD0 }, # was 0x24, 25 cases
+    { address = 0x82400690, size = 0x64 }, # was 0x24, 7 cases
+    { address = 0x824007F0, size = 0xBC }, # was 0x20, 19 cases
+    { address = 0x82401298, size = 0xC0 }, # was 0x24, 4 cases
+    { address = 0x82431320, size = 0xB4 }, # was 0x28, 6 cases
+    { address = 0x8244D108, size = 0x58 }, # was 0x28, 7 cases
+    { address = 0x824698A0, size = 0x134 }, # was 0x44, 9 cases
+    { address = 0x824699D8, size = 0xA0 }, # was 0x38, 9 cases
+    { address = 0x82469A78, size = 0xE4 }, # was 0x64, 9 cases
+    { address = 0x82469B70, size = 0xB4 }, # was 0x60, 9 cases
+    { address = 0x82477858, size = 0xEC }, # was 0x54, 11 cases
+    { address = 0x8249E058, size = 0x80 }, # was 0x30, 4 cases
+    { address = 0x824BBFB8, size = 0x6C }, # was 0x24, 6 cases
+    { address = 0x824BC070, size = 0xA0 }, # was 0x20, 4 cases
+    { address = 0x824BC740, size = 0x64 }, # was 0x24, 6 cases
+    { address = 0x824BC7B0, size = 0xFC }, # was 0x48, 6 cases
+    { address = 0x824BDDE8, size = 0x70 }, # was 0x28, 4 cases
+    { address = 0x824BDE58, size = 0xCC }, # was 0x28, 4 cases
+    { address = 0x824BDF28, size = 0xBC }, # was 0x28, 4 cases
+    { address = 0x824BE118, size = 0x1D8 }, # was 0x30, 64 cases; the button mask compares after the table run to 0x824BE2F0
+    { address = 0x824C0CD8, size = 0x88 }, # was 0x28, 4 cases; the cases share a tail at 0x824C0D34 (the chapter title text)
+    # Switches without a bounds check before the table, which XenonAnalyse
+    # reads by length since the change in tools/XenonRecomp/XenonAnalyse;
+    # bounded by CoD3Scan --fixfuncs from the recompiler's reports.
+    { address = 0x823C2118, size = 0xFC }, # was 0x18, 18 cases
+    { address = 0x82465C78, size = 0x48 }, # was 0x18, 4 cases
+    { address = 0x824675A8, size = 0x78 }, # was 0x18, 6 cases
+    { address = 0x824C0A48, size = 0x48 }, # was 0x18, 4 cases
+    # Cut into pieces elsewhere (a later piece branches back into the
+    # function); found by scripts/level_functions.py's method on the title.
+    { address = 0x821CF918, size = 0x90 },
+    { address = 0x823484C0, size = 0x81C },
+    { address = 0x8235B8D0, size = 0x174 },
+    { address = 0x8235BC70, size = 0x27C },
+    { address = 0x8235C5A8, size = 0x208 },
+    { address = 0x824C3460, size = 0x74 }, # was 0x24, 6 cases
+    { address = 0x824C40B8, size = 0x100 }, # was 0x3C, 5 cases; the last case continues past 0x824C4180 to the blr at 0x824C41B4
+    { address = 0x824C4180, size = 0x34 },  # its own function as well (a case of the one above branches into its tail); kept for whoever calls it
+    { address = 0x824C41B4, size = 0x4 },   # an empty method, likewise inside the range above
+    { address = 0x824C5150, size = 0xF4 }, # was 0x3C, 29 cases
+    { address = 0x824C8618, size = 0x2D8 }, # was 0x44, 12 cases
+    { address = 0x825386D8, size = 0x198 }, # was 0x5C, 21 cases
+    { address = 0x82538C98, size = 0x100 }, # was 0x40, 32 cases
+]
+
+# --- Data words that must not be decoded as instructions ----------------
+# Inter-function alignment padding. More entries (exception handler pointers,
+# C++ frame handler data) get added here as the recompiler reports them.
+invalid_instructions = [
+    { data = 0x00000000, size = 4 }, # padding
+]

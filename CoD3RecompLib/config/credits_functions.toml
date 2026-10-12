@@ -1,0 +1,15 @@
+# Function boundaries kept by hand and by scripts/level_functions.py for credits,
+# merged into the recompiler's config on every pass (these win over the scan's).
+# Each is a function the analyser cut into pieces: to the recompiler every
+# branch between the pieces was "// ERROR" and a return, and the function did
+# less than it should. The large ones are compare chains over hashed names;
+# the tail they all reach holds the "not found" paths.
+functions = [
+    { address = 0x8904E9C8, size = 0x14F8 },
+    { address = 0x8912EDC8, size = 0xA678 },
+    { address = 0x891CE540, size = 0x128 },
+    { address = 0x891D3FC8, size = 0x174 },
+    { address = 0x891D4368, size = 0x27C },
+    { address = 0x891D4CA0, size = 0x208 },
+    { address = 0x891DB120, size = 0x81C },
+]

@@ -1,0 +1,15 @@
+# Function boundaries kept by hand and by scripts/level_functions.py for crssrds,
+# merged into the recompiler's config on every pass (these win over the scan's).
+# Each is a function the analyser cut into pieces: to the recompiler every
+# branch between the pieces was "// ERROR" and a return, and the function did
+# less than it should. The large ones are compare chains over hashed names;
+# the tail they all reach holds the "not found" paths.
+functions = [
+    { address = 0x890A2E68, size = 0x14F8 },
+    { address = 0x89180E60, size = 0xA678 },
+    { address = 0x8921FF30, size = 0x128 },
+    { address = 0x892259B8, size = 0x174 },
+    { address = 0x89225D58, size = 0x27C },
+    { address = 0x89226690, size = 0x208 },
+    { address = 0x8922CB10, size = 0x81C },
+]

@@ -1,0 +1,6 @@
+# Text is LF in the repository and in the working tree; the tools here
+# do not care which and a mixed tree makes every diff noise.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.bmp binary

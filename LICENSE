@@ -1,13 +1,67 @@
-MIT License
+This repository contains two works under two licences. Which is which matters,
+so please read both sections.
 
-Copyright (c) 2026 jxnplays
+===============================================================================
+1. INHERITED RUNTIME — BSD 3-Clause
+===============================================================================
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+The host runtime in `CoD3Host/`, the recompiler configuration in
+`CoD3RecompLib/config/`, the scripts in `scripts/`, the analysis tooling in
+`tools/`, and the patch at `tools/patches/XenonRecomp.patch` are the work of the
+author of:
+
+    https://github.com/FrankHUN88453/CoD3Recomp
+
+and are redistributed here under the BSD 3-Clause licence. Their notice is
+retained below in full, as that licence requires. See docs/PROVENANCE.md.
+
+Copyright (c) the authors of CoD3Recomp
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+The above notice applies to the inherited work only. It is not a claim about the
+rest of this repository.
+
+===============================================================================
+2. THIS PROJECT'S OWN WORK — MIT
+===============================================================================
+
+Everything else in this repository — the README, the documentation in `docs/`,
+the project identity and logo, and all changes made from the point this project
+took over — is ours, under the MIT licence:
+
+Copyright (c) 2026 COD3 Recomp contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
@@ -19,3 +73,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+===============================================================================
+GAME CONTENT
+===============================================================================
+
+This repository contains no Activision or Treyarch assets: no game code, no game
+data, no audio, no shaders. Those come from your own legally owned copy of the
+game and are not distributed here.
+
+The recompiled game code under `CoD3RecompLib/ppc/` and
+`CoD3RecompLib/levels/*/` is derived from the copyrighted binary, is NOT covered
+by either licence above, and is not committed to this repository. It is
+regenerated locally by `scripts/recompile.ps1` from your own `default.xex`.
+
+`tools/XenonRecomp` is a submodule of hedge-dev/XenonRecomp, MIT licensed, with
+local patches applied as described in `tools/patches/README.md`.

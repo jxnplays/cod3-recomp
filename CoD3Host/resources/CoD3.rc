@@ -1,0 +1,30 @@
+// Resources compiled into CoD3.exe.
+//
+// The first icon in the file is the one Explorer, the taskbar and the window
+// use, which is why it has the lowest identifier.
+
+1 ICON "CoD3.ico"
+
+1 VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEOS          0x4L
+FILETYPE        0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "Call of Duty 3, statically recompiled"
+            VALUE "FileVersion",     "0.1.0.0"
+            VALUE "InternalName",    "CoD3"
+            VALUE "OriginalFilename","CoD3.exe"
+            VALUE "ProductName",     "CoD3Recomp"
+            VALUE "ProductVersion",  "0.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
