@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/logo.png" alt="COD3 Recomp" width="620">
+  <img src="docs/logo.png" alt="COD3 Recomp" width="800">
 </div>
 
 <div align="center">
