@@ -15,7 +15,10 @@ param(
     [switch]$SwitchTables,
     [switch]$BuildLib,
     [switch]$BuildHost,
-    [int]$Jobs = [Environment]::ProcessorCount
+    [int]$Jobs = [Environment]::ProcessorCount,
+    # An extracted game folder holding default.xex. Same thing the installer
+    # records in game.path, which is read when this is left out.
+    [string]$GameRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,7 +61,8 @@ function Invoke-InVsEnv([string]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "Command failed (exit $LASTEXITCODE): $Command" }
 }
 
-$Xex         = Join-Path $Root 'CoD3RecompLib\private\default.xex'
+$Private     = Join-Path $Root 'CoD3RecompLib\private'
+$Xex         = Join-Path $Private 'default.xex'
 $Config      = Join-Path $Root 'CoD3RecompLib\config\CoD3.toml'
 $SwitchToml  = Join-Path $Root 'CoD3RecompLib\config\CoD3_switch_tables.toml'
 $PpcDir      = Join-Path $Root 'CoD3RecompLib\ppc'
@@ -67,8 +71,54 @@ $ToolBuild   = Join-Path $Root 'tools\build'
 $Recomp      = Join-Path $ToolBuild 'XenonRecomp\XenonRecomp.exe'
 $Analyse     = Join-Path $ToolBuild 'XenonAnalyse\XenonAnalyse.exe'
 
+# Where the game is. A copy dropped into CoD3RecompLib/private/ is used as-is;
+# failing that, an extracted game folder - the one the installer beside the
+# executable records in game.path, or a game/ directory beside the repository
+# - is used, and the executable is copied out of it. That way someone who has
+# extracted their disc and nothing else can point this at the folder and have
+# it work, instead of having to know that default.xex belongs in private/.
+#
+# recompile_level.ps1 finds its game the same way and for the same reason; the
+# two must agree, or the main game builds and the levels do not.
 if (-not (Test-Path $Xex)) {
-    throw "default.xex missing at $Xex. Copy it from your own Xbox 360 disc dump."
+    $gameRoot = $GameRoot
+    $gamePath = Join-Path $Root 'game.path'
+    if ($gameRoot -eq '' -and (Test-Path $gamePath)) { $gameRoot = (Get-Content $gamePath -Raw).Trim() }
+    if (($gameRoot -eq '' -or -not (Test-Path (Join-Path $gameRoot 'default.xex'))) -and $GameRoot -eq '') {
+        $nearby = Join-Path $Root 'game'
+        if (Test-Path (Join-Path $nearby 'default.xex')) { $gameRoot = $nearby }
+    }
+    if ($gameRoot -ne '' -and (Test-Path (Join-Path $gameRoot 'default.xex'))) {
+        New-Item -ItemType Directory -Force -Path $Private | Out-Null
+        Copy-Item (Join-Path $gameRoot 'default.xex') $Xex -Force
+        Write-Host "using the default.xex from $gameRoot" -ForegroundColor Green
+    }
+}
+
+if (-not (Test-Path $Xex)) {
+    throw @"
+default.xex was not found, and neither was a game folder to take it from.
+
+Looking for:
+  $Xex
+  the folder named in $gamePath
+  $(Join-Path $Root 'game')
+
+Any one of these is enough:
+
+  1. Run the host once so it records where your game is:
+       build\CoD3Host\CoD3.exe --game "D:\Call of Duty 3"
+     That writes game.path, and this script will find the executable.
+
+  2. Or point this script at it:
+       .\scripts\recompile.ps1 -GameRoot "D:\Call of Duty 3" -BuildLib
+
+  3. Or copy the executable in yourself:
+       copy "D:\Call of Duty 3\default.xex" "CoD3RecompLib\private\default.xex"
+
+An extracted Xbox 360 disc folder, or a disc image the host can install,
+both contain default.xex. Your own legally owned copy only.
+"@
 }
 
 # --- 1. Host tools ---------------------------------------------------------

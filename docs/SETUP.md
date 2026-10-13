@@ -128,25 +128,55 @@ as far as you can go, and you have verified the build works.
 
 ## 5. Supply your copy of the game
 
-Put your `default.xex` and the level DLLs in:
+**You need an extracted Xbox 360 game folder — and nothing else.** If you
+have one, you can skip the three options below and go straight to step 6:
+the scripts find it themselves.
+
+That folder is the one containing `default.xex` at its root:
 
 ```
-CoD3RecompLib\private\
+<your game>\default.xex
+<your game>\sp\<level>\<level>.dll      fifteen of them
+<your game>\sp\global.cod
+<your game>\config\
 ```
 
-Fifteen files, about 39 MB:
+Any of these three makes it work:
 
+**A. Let the host install it, and record where it went.** Run the
+executable once against your disc image or extracted folder. It writes
+`game.path` at the repository root, and both recompile scripts read it.
+
+```powershell
+# from a disc image
+.\build\CoD3Host\CoD3.exe --iso "D:\Call of Duty 3.iso"
+
+# or from a folder you already extracted, used where it is
+.\build\CoD3Host\CoD3.exe --game "D:\Call of Duty 3"
+
+.\build\CoD3Host\CoD3.exe --install-only     # install, do not start the game
 ```
-default.xex      blkbrn.dll    chambois.dll   credits.dll   crssrds.dll
-falaise.dll      forest.dll    fuelplnt.dll   hostage.dll   island.dll
-laison.dll       mace2.dll     mayenne.dll    nightd.dll    saint_lo.dll
-stbert.dll
+
+**B. Or point the scripts at it directly.** Works without running the
+host at all — useful if you want to check the path before installing:
+
+```powershell
+.\scripts\recompile.ps1      -GameRoot "D:\Call of Duty 3" -BuildLib
+.\scripts\recompile_level.ps1 -All -GameRoot "D:\Call of Duty 3"
 ```
 
-`CoD3RecompLib/private/` is in `.gitignore` and must stay that way.
+**C. Or put a `game` folder beside the repository.** Also found
+automatically.
 
-Where to get them: from a disc or dump you own. The README does not say
-where to obtain one, deliberately.
+Whichever route, the scripts copy what they need into
+`CoD3RecompLib/private/`, which is in `.gitignore` and must stay that way.
+Nothing from your disc is ever committed.
+
+If none of them finds it, the error message lists every path that was
+tried and the three commands above.
+
+**Where to get the game:** from a disc or dump you own. This document
+does not say where to obtain one, deliberately.
 
 ---
 
