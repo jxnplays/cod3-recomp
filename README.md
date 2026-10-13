@@ -36,6 +36,31 @@ compiled, the game code is ordinary x86-64 that the OS runs natively.
 
 ---
 
+## Documentation
+
+Start here, in the order you probably want them:
+
+| | |
+|---|---|
+| **[docs/SETUP.md](docs/SETUP.md)** | **Setup tutorial.** Prerequisites, how to build it, every environment variable, troubleshooting. Read this first if you want to run it. |
+| [docs/PROVENANCE.md](docs/PROVENANCE.md) | Whose work this is, and what this project changed. Read before patching the runtime. |
+| [docs/GAPS.md](docs/GAPS.md) | The open questions, with what is known about each |
+| [docs/CONSOLE.md](docs/CONSOLE.md) | How commands reach the title, and the 188 console variables it has |
+| [docs/MOUSE.md](docs/MOUSE.md) | Mouse look: the measurements, and the leads already exhausted |
+| [docs/cvars.txt](docs/cvars.txt) | The console variables, as a plain list |
+| [docs/FINDINGS.md](docs/FINDINGS.md) | Earlier analysis |
+| [docs/renderer.md](docs/renderer.md) | How the Direct3D 11 renderer works |
+| [docs/animation.md](docs/animation.md) | Animation |
+| [docs/scripts.md](docs/scripts.md) | What each script in `scripts/` does |
+| [docs/kernel-imports.txt](docs/kernel-imports.txt) | The 179 Xbox 360 imports and their status |
+
+Two things a newcomer usually gets wrong, so they are said here as well as
+below: **the game is not in this repository** (no `.xex`, no assets, ever), and
+the **level libraries are a separate build step** that `recompile.ps1` does not
+perform for you.
+
+---
+
 ## Provenance — please read
 
 This repository is a **continuation** of the work in
@@ -319,7 +344,7 @@ rate swing — we say so rather than guessing. Contributions welcome; see
 | `CoD3RecompLib/config/` | recompiler configuration, every address documented |
 | `scripts/` | the pipeline, analysis tools and frame comparison |
 | `tools/` | XenonRecomp (patched submodule), XEX scanner, PowerPC assembler |
-| `docs/` | renderer design, kernel import list, provenance, findings |
+| `docs/` | [setup tutorial](docs/SETUP.md), provenance, gaps, findings, renderer design, kernel import list |
 
 ## Legal
 
