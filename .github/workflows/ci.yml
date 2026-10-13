@@ -18,7 +18,7 @@ jobs:
     name: XenonRecomp patch applies
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: false
       - name: Check the patch is well formed
@@ -63,10 +63,12 @@ jobs:
       # build has. Without it this job sees an empty tools/XenonRecomp and
       # CMake cannot find a source directory - which is what the first run of
       # this job did.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
 
       - name: Apply the patch
         shell: pwsh
@@ -129,7 +131,7 @@ jobs:
 
       - name: Uploads
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: tools
           path: tools/build/**/XenonRecomp.exe
