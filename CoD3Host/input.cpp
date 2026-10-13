@@ -1,8 +1,7 @@
-﻿#include "input.h"
+#include "input.h"
 #include "kernel.h"
 #include "window.h"
 #include "overlay.h"
-#include "render_internal.h"
 #include "settings.h"
 
 #include <algorithm>
@@ -93,25 +92,6 @@ namespace
 
         if (hold)
         {
-            // What the look is actually being fed, said once, because the
-            // gain is a product of the DPI and the sensitivity and neither is
-            // visible from the outside, and because a sensitivity dragged far
-            // enough up stops doing anything at all while looking exactly like
-            // a setting that is broken. What is printed is the count at which
-            // the stick reaches full deflection: past that the title is handed
-            // the same number however far the hand moved, which is the whole
-            // of what "it does not track one to one" means.
-            const Settings::Values& atGrab = Settings::Get();
-            const double dpi = atGrab.mouseDpi > 0 ? double(atGrab.mouseDpi) : 800.0;
-            const double gain = (80000.0 / dpi) * atGrab.mouseSensitivity;
-            const double full = gain > 0 ? 32767.0 / gain : 0.0;
-            printf("input: the mouse is set at %d DPI, sensitivity %.2f\n",
-                int(dpi), double(atGrab.mouseSensitivity));
-            printf("input: the stick reaches full deflection after about %.0f counts"
-                   " (%.1f cm of hand at %d DPI); past that it cannot go further\n",
-                full, full / dpi * 2.54, int(dpi));
-            fflush(stdout);
-
             RECT client{};
             GetClientRect(window, &client);
             POINT topLeft{ client.left, client.top };
@@ -143,55 +123,23 @@ namespace
     // How far the pointer moved since the last look, in stick units. Full
     // deflection at about twenty five pixels in a sixtieth of a second, a
     // brisk turn rather than a twitch.
-    //
-    // What the title reads is one number per frame, not one per read. It asks
-    // for its input twice a frame - COD3_PADRATE counts the asks, and it is
-    // two for every frame it draws - and on a console both asks return the
-    // same pad, because the pad is sampled once a frame and held. Here the
-    // first ask used to take the whole frame's movement and the second got
-    // nothing, so the stick the title steered by was zero half the time.
-    //
-    // So movement is collected and published per frame rather than taken per
-    // read. The counts are read from a running total, the difference from the
-    // last one taken is this read's share, and the share is held until the
-    // title's next swap: both asks in a frame then see the same deflection,
-    // and no movement is dropped or applied a frame early.
     void ReadMouse(int16_t& outX, int16_t& outY)
     {
         outX = 0;
         outY = 0;
 
-        // What has been read out of the mouse's total so far, and what has
-        // been given to the title. What is given is the whole of a frame's
-        // movement, published once, and both asks in that frame read it.
-        static long seenX = 0, seenY = 0;         // of the mouse's running total
-        static long givenX = 0, givenY = 0;       // published to the title
-        static long carriedX = 0, carriedY = 0;   // owed to the next frame
-        static uint64_t lastSwap = uint64_t(-1);
-
-        // The mouse's own movement is read whether it is used or not, so
+        // The mouse's own movement is taken whether it is used or not, so
         // that what piled up while the menu was open is not a jump the
         // moment the window takes the mouse back.
-        long totalX = 0, totalY = 0;
-        const bool raw = Window::RawMouseTotal(totalX, totalY) && Settings::Get().rawMouse;
-        if (!g_mouseHeld.load())
-        {
-            // Not steering: keep the total's place up to date so the movement
-            // from the menu is never handed over as one lurch on entry.
-            seenX = totalX;
-            seenY = totalY;
-            givenX = givenY = 0;
-            return;
-        }
+        long rawX = 0, rawY = 0;
+        const bool raw = Window::TakeRawMouse(rawX, rawY) && Settings::Get().rawMouse;
+        if (!g_mouseHeld.load()) return;
 
         long dx = 0, dy = 0;
         if (raw)
         {
-            // What has arrived since this share of the total was last read.
-            dx = totalX - seenX;
-            dy = totalY - seenY;
-            seenX = totalX;
-            seenY = totalY;
+            dx = rawX;
+            dy = rawY;
             // The pointer is still put back in the middle: it is hidden and
             // nothing reads it, but a click has to land in the window and it
             // must never come to rest against an edge of the screen.
@@ -208,154 +156,51 @@ namespace
             if (dx != 0 || dy != 0) SetCursorPos(g_centre.x, g_centre.y);
         }
 
-        // Published once per frame, on the first ask of that frame, so both
-        // asks in a frame read the same deflection - which is what a console
-        // does, the pad being sampled once a frame and held.
-        //
-        // It is published on the FIRST ask and not at the frame boundary on
-        // purpose. Collecting the frame and handing it over at the swap puts
-        // every movement a frame behind the hand: at the frame times this
-        // title runs, that is tens of milliseconds, and the camera drifts
-        // behind the mouse instead of tracking it - a sweep of the hand comes
-        // out as a slide, and a circle comes out as something else. Asking is
-        // what makes the movement current, so the first ask of a frame takes
-        // everything that has arrived and hands it over at once.
-        //
-        // Movement that arrives after that first ask is not lost, only later:
-        // the next ask takes the difference from the total it last saw.
-        const uint64_t swap = RenderInternal::Swaps();
-        if (swap != lastSwap)
-        {
-            lastSwap = swap;
-            givenX = dx + carriedX;
-            givenY = dy + carriedY;
-            carriedX = carriedY = 0;
-        }
-        // The second ask of a frame asks again and is answered with the same
-        // deflection, so a frame's movement is turned once and not twice.
-        dx = givenX;
-        dy = givenY;
-
-        // A stick's deflection is a speed: the title turns by it times its
-        // frame's time. What is published is the movement of one whole frame,
-        // so it is put on the scale of a sixtieth of a second - the rate the
-        // gain was set at - and a sweep of the hand is the same turn whether
-        // the frame it landed in was a sixtieth of a second long or a
-        // two-hundredth. This matters more than it looks: the title runs at
-        // 60 frames a second in the menus and at 200 and more in a level, so
-        // a gain that was right for one is three times too slow in the other.
-        //
-        // The frame's length is measured where the swap count changes and
-        // nowhere else. Measuring it between reads does not work, because the
-        // title asks twice a frame and half of those gaps are the width of a
-        // moment: a scale built from them swings by the length of a frame.
-        double scale = 1.0;
-        {
-            static double secondsPerFrame = 1.0 / 60.0;
-            static uint64_t timedSwap = uint64_t(-1);
-            // Timed once per frame, at the boundary, and then reused by every
-            // read in that frame. The first frame after a long gap - a stall,
-            // a pause, the game not running at all - leaves the last good rate
-            // alone rather than dividing by the gap.
-            if (swap != timedSwap)
-            {
-                static auto lastFrame = std::chrono::steady_clock::now();
-                const auto now = std::chrono::steady_clock::now();
-                const double seconds = std::chrono::duration<double>(now - lastFrame).count();
-                lastFrame = now;
-                timedSwap = swap;
-                // Under half a millisecond is not a frame, and over a
-                // fiftieth of a second is a stall rather than a slow frame.
-                // Either way the rate from before is the better guess.
-                if (seconds >= 0.0005 && seconds <= 0.05)
-                {
-                    // Smoothed, so one short frame in a run of long ones does
-                    // not move the gain and then move it back.
-                    secondsPerFrame += (seconds - secondsPerFrame) * 0.25;
-                }
-            }
-            scale = (1.0 / 60.0) / secondsPerFrame;
-        }
-
-        // The gain is worked out from the mouse's own resolution rather than
-        // fixed, because a count is worth a different amount of turn on every
-        // mouse: 800 counts is an inch on one and a fifth of an inch on
-        // another, and one fixed number cannot feel right for both.
-        //
-        // The size of it is measured rather than modelled. The first attempt
-        // at this derived the gain from the title's turn rate at full stick,
-        // inferred from a report that a turn took the length of a desk, and
-        // came out about ten times too quick in practice: half an inch of
-        // hand - near four hundred counts - turned the view a hundred and
-        // eighty degrees. The model chained three assumptions, one of which
-        // was the title's own response, and the direct measurement beat all
-        // three.
-        //
-        // So it is scaled off that, and then off the player's own DPI as well:
-        // at 400 the same hand movement turns half as far again as at 800,
-        // and setting the number is what a player does when the mouse does not
-        // match what they asked for.
-        const Settings::Values& settings = Settings::Get();
-        const double dpi = settings.mouseDpi > 0 ? double(settings.mouseDpi) : 800.0;
-        const double gain = (80000.0 / dpi) * settings.mouseSensitivity * scale;
-        const long x = long(std::clamp(double(dx) * gain, -32767.0, 32767.0));
-        // Screen coordinates grow downwards and a stick grows upwards.
-        const long y = long(std::clamp(-double(dy) * gain, -32767.0, 32767.0));
-
-        // What the clamp could not say is simply not said.
-        //
-        // It used to be owed to the next frame instead, so that a fast flick
-        // covering more counts than the stick could hold would still turn as
-        // far as it had moved. That was the wrong idea and it showed: the
-        // view kept turning after the hand had stopped, because the overflow
-        // was still being paid out - a drag behind every flick, and the thing
-        // that reads as the camera floating rather than tracking. A real stick
-        // cannot go past full deflection either, so neither does this.
-        //
-        // The carry also made the mouse disagree with itself: a small nudge
-        // straight after a big one was turned by the big one's leftovers, and
-        // read as doing more than the hand had done.
-        carriedX = carriedY = 0;
-
-        outX = int16_t(x);
-        outY = int16_t(y);
-
-        // COD3_MOUSELOG=1: what the look took, once a second. Both the counts
-        // the mouse's device reported and the stick the title was given,
-        // because the gain between them is where a mouse that feels wrong is
-        // wrong: a gain far too high puts ordinary movement into the clamp,
-        // where a twitch and a fast sweep both arrive as full deflection and
-        // neither can be aimed with. The frame time is here too, since it
-        // scales the movement and the title runs at sixty frames a second in
-        // the menus and two hundred in a level.
+        // COD3_MOUSELOG=1: what the look took, once a second, to see that
+        // the mouse's own counts arrive and how many a turn is worth.
         static const bool log = getenv("COD3_MOUSELOG") != nullptr;
-        if (log)
+        if (log && (dx != 0 || dy != 0))
         {
-            static uint64_t second = 0, counts = 0, reads = 0, peak = 0, pinned = 0, frames = 0;
-            static uint64_t lastLoggedSwap = uint64_t(-1);
-            if (dx != 0 || dy != 0)
-            {
-                counts += uint64_t(std::abs(dx) + std::abs(dy));
-                reads++;
-                const long biggest = std::abs(x) > std::abs(y) ? std::abs(x) : std::abs(y);
-                if (uint64_t(biggest) > peak) peak = uint64_t(biggest);
-                if (biggest >= 32767) pinned++;
-            }
-            const uint64_t nowSwap = RenderInternal::Swaps();
-            if (nowSwap != lastLoggedSwap) { lastLoggedSwap = nowSwap; frames++; }
-
+            static uint64_t second = 0, counts = 0, reads = 0;
+            counts += uint64_t(std::abs(dx) + std::abs(dy));
+            reads++;
             const uint64_t now = GetTickCount64() / 1000;
             if (now != second)
             {
                 second = now;
-                printf("input: %s, %llu counts, %llu reads, %llu frames, peak stick %llu of 32767, %llu pinned, frame %.2f ms\n",
-                    raw ? "the mouse's own movement" : "the pointer's travel",
-                    (unsigned long long)counts, (unsigned long long)reads, (unsigned long long)frames,
-                    (unsigned long long)peak, (unsigned long long)pinned, scale * 1000.0 / 60.0);
+                printf("input: %s, %llu counts over %llu reads\n", raw ? "the mouse's own movement" : "the pointer's travel",
+                    (unsigned long long)counts, (unsigned long long)reads);
                 fflush(stdout);
-                counts = 0; reads = 0; peak = 0; pinned = 0; frames = 0;
+                counts = 0; reads = 0;
             }
         }
+
+        // A stick's deflection is a speed: the title turns by it times its
+        // frame's time, and reads the pad once a frame (twice, the second
+        // read a moment after the first). The distance the mouse went since
+        // the read before is a speed only at one frame rate, so taken as it
+        // is, the turn would slow down as the frame rate went up (at 100 a
+        // second to 60 per cent of the turn at 60). It is scaled to the
+        // distance over a sixtieth of a second, the rate the gain was set
+        // at, so a sweep of the hand is the same turn at any frame rate.
+        // The read that comes straight after another is left as it is: what
+        // it carries is the crumb in between.
+        double scale = 1.0;
+        {
+            static auto lastRead = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
+            const double interval = std::chrono::duration<double>(now - lastRead).count();
+            lastRead = now;
+            if (interval >= 0.002) scale = (1.0 / 60.0) / std::min(interval, 0.05);
+        }
+
+        // The settings menu's sensitivity scales the gain, both axes alike.
+        const double gain = 1300.0 * Settings::Get().mouseSensitivity * scale;
+        const long x = long(std::clamp(double(dx) * gain, -32767.0, 32767.0));
+        // Screen coordinates grow downwards and a stick grows upwards.
+        const long y = long(std::clamp(-double(dy) * gain, -32767.0, 32767.0));
+        outX = int16_t(x);
+        outY = int16_t(y);
     }
 
     // One step of the menu highlight for each stretch of mouse movement.
@@ -551,23 +396,11 @@ namespace
             return text != nullptr && text[0] != 0 && text[0] != '0';
         }();
         if (ignored) return pad;
-
-        // The mouse is let go of when something else has the focus or the
-        // settings menu is up, and given back when that ends - unless the
-        // player let it go on purpose with Escape, which is how they get the
-        // pointer out to reach the taskbar.
-        //
-        // It used to be given back by nothing: the only ways to take it were
-        // F1, the middle button, and the once-per-level first time in a level.
-        // So every time the window lost the focus and took it back, the mouse
-        // stayed free and the look did nothing at all, and the only cure was a
-        // click in the window - which looks exactly like the mouse having
-        // broken. Alt-tabbing away to do anything else and back was enough to
-        // do it, which is a thing every player does.
-        static bool takeItBack = false;
         if (!Window::HasFocus() || Overlay::IsOpen())
         {
-            if (g_mouseHeld.load()) { takeItBack = true; SetHold(false); }
+            // Out of focus, or the settings menu is up and the keys and the
+            // mouse are its.
+            if (g_mouseHeld.load()) SetHold(false);
             return pad;
         }
 
@@ -586,22 +419,16 @@ namespace
         // Start is held for a few reads after Escape frees the pointer, so
         // the title's own poll, which is slower than these reads, sees it.
         static int startReadsLeft = 0;
-        if (g_mouseHeld.load() && escapeDown) { SetHold(false); startReadsLeft = 10; takeItBack = false; }
+        if (g_mouseHeld.load() && escapeDown) { SetHold(false); startReadsLeft = 10; }
         else if (!g_mouseHeld.load())
         {
-            // Back from whatever had the focus: take it as it was, without
-            // making the player click for it.
-            if (takeItBack) { takeItBack = false; SetHold(true); }
-            else
+            static bool takenForLevel = false;
+            if (!inLevel) takenForLevel = false;
+            const bool firstTime = inLevel && !takenForLevel;
+            if (Down(VK_F1) || Down(VK_MBUTTON) || firstTime || (inLevel && Down(VK_LBUTTON) && !escapeDown))
             {
-                static bool takenForLevel = false;
-                if (!inLevel) takenForLevel = false;
-                const bool firstTime = inLevel && !takenForLevel;
-                if (Down(VK_F1) || Down(VK_MBUTTON) || firstTime || (inLevel && Down(VK_LBUTTON) && !escapeDown))
-                {
-                    SetHold(true);
-                    if (inLevel) takenForLevel = true;
-                }
+                SetHold(true);
+                if (inLevel) takenForLevel = true;
             }
         }
 

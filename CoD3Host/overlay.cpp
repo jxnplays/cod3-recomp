@@ -314,26 +314,11 @@ namespace
                 }
                 if (ImGui::BeginTabItem("Controls"))
                 {
-                    // These two take effect at once rather than waiting for
-                    // Apply. They are the two a player reaches for while
-                    // playing to see whether the feel is right, and with a
-                    // button in the way they were quietly not taking effect:
-                    // a sensitivity dragged to 12 that needed a second click
-                    // somewhere else looked exactly like a setting that did
-                    // nothing. Both are written to the settings file, which is
-                    // fine, because a slider only reports a change when the
-                    // value actually moved.
-                    if (ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity, 0.05f, 12.0f, "%.2f"))
-                        Settings::Set(g_edit);
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(takes effect at once)");
+                    ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity, 0.1f, 3.0f, "%.2f");
+                    ImGui::TextDisabled("Both axes alike.");
                     ImGui::Checkbox("Raw mouse input", &g_edit.rawMouse);
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(the mouse's own counts, without Windows' pointer speed)");
-                    if (ImGui::InputInt("Mouse DPI", &g_edit.mouseDpi, 50, 200))
-                        Settings::Set(g_edit);
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(what the mouse counts per inch; the turn is worked out from it)");
+                    ImGui::TextDisabled("(the mouse's own movement, without Windows' pointer speed and acceleration)");
                     ImGui::Checkbox("Aim assist", &g_edit.aimAssist);
                     ImGui::SameLine();
                     ImGui::TextDisabled("(the game's own; takes effect after a restart)");

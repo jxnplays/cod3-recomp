@@ -49,8 +49,7 @@ namespace Settings
         bool controller = true;       // read a pad when one is there
         float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 3
         bool rawMouse = true;            // the mouse's own counts, not the pointer's travel
-        int mouseDpi = 800;              // the mouse's own resolution: what a count is worth
-    int keys[ActionCount] = {};
+        int keys[ActionCount] = {};
     };
 
     Values Defaults();

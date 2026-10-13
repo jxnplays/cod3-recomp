@@ -28,22 +28,13 @@ namespace Window
 
     // Where the guest resolved its last frame, for the count of frames.
     void SetFrontBuffer(uint32_t address, uint32_t width, uint32_t height);
-    // How far the mouse itself has moved since the program started, in the
-    // counts its device reports. This is the movement of the mouse, not of the
-    // pointer: the system's pointer speed and its "enhance pointer precision"
-    // never touch it, so a turn in the game is the same turn on every machine.
-    //
-    // A running total, not a batch per call, and the caller takes the
-    // difference from the last total it saw. It used to be emptied on every
-    // call, which made the movement's arrival a race: the window's message
-    // pump runs on an 8 ms sleep, about 125 times a second, and the title
-    // reads its input 120 times a second, so whether a frame's movement had
-    // been delivered yet when the read drained it was down to which came
-    // first. A total cannot lose that race, because nothing is waiting on it.
-    //
+    // How far the mouse itself moved since the last call, in the counts its
+    // device reports. This is the movement of the mouse, not of the pointer:
+    // the system's pointer speed and its "enhance pointer precision" never
+    // touch it, so a turn in the game is the same turn on every machine.
     // False when the raw input could not be had, and the caller falls back
     // to following the pointer.
-    bool RawMouseTotal(long& x, long& y);
+    bool TakeRawMouse(long& x, long& y);
 
     // Wheel notches turned since the last call, positive away from the user.
     int TakeWheel();

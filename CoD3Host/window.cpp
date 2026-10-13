@@ -9,7 +9,6 @@
 
 #include "kernel.h"
 #include "window.h"
-#include "input.h"
 #include "overlay.h"
 #include "settings.h"
 #include "render.h"
@@ -46,10 +45,6 @@ namespace
 
     // Frames the guest finished, counted where the front buffer changes.
     std::atomic<uint64_t> g_guestFrames{ 0 };
-
-    // COD3_MOUSELOG=1: how fast the message pump goes round, which is the
-    // floor on how quickly the mouse can reach the look.
-    const bool pumpLog = getenv("COD3_MOUSELOG") != nullptr;
 
     bool g_borderless = false;
     WINDOWPLACEMENT g_placement{};
@@ -276,49 +271,7 @@ namespace
             }
 
             Render::PresentIdle();
-
-            // How long this loop waits decides how far the mouse lags the
-            // hand: the counts are not read where they arrive, the driver
-            // puts a message on the queue and it is taken off here. A loop
-            // that sleeps delivers the mouse in bursts a sleep apart, so a
-            // circle drawn with the hand comes out trailing behind it - the
-            // camera sliding rather than tracking.
-            //
-            // While the mouse is steering the wait is cut to a millisecond,
-            // not removed. Removing it and spinning on yield was tried and
-            // cost the run: this loop presents as well as pumps, and
-            // presenting thousands of times a second takes the swap chain
-            // down - the title died at fifty eight seconds, the log ending
-            // mid-frame with nothing wrong in it. A millisecond bounds both
-            // the latency and how often this loop can present.
-            if (Input::MouseHeld()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            else std::this_thread::sleep_for(std::chrono::milliseconds(8));
-
-            // How often this loop actually gets round, which is the whole of
-            // the delay between the mouse moving and the look having it: the
-            // counts sit on the queue until this loop runs. Printed because
-            // it is otherwise invisible, and because the loop also presents a
-            // frame, so the time spent waiting on that is added to the wait.
-            // With COD3_MOUSELOG, which is when the look is being looked at.
-            if (pumpLog)
-            {
-                static uint64_t pumps = 0, second = 0;
-                static auto lastPump = std::chrono::steady_clock::now();
-                pumps++;
-                const uint64_t tick = GetTickCount64() / 1000;
-                if (tick != second)
-                {
-                    second = tick;
-                    const double ms = std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - lastPump).count();
-                    lastPump = std::chrono::steady_clock::now();
-                    printf("input: the message pump went round %llu times a second,"
-                           " every %.2f ms, while the mouse steers\n",
-                        (unsigned long long)pumps, ms / double(pumps));
-                    fflush(stdout);
-                    pumps = 0;
-                }
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
         }
 
         g_window.store(nullptr);
@@ -360,11 +313,11 @@ bool Window::HasFocus()
     return window != nullptr && GetForegroundWindow() == window;
 }
 
-bool Window::RawMouseTotal(long& x, long& y)
+bool Window::TakeRawMouse(long& x, long& y)
 {
     if (!g_rawRegistered.load()) { x = 0; y = 0; return false; }
-    x = g_rawX.load(std::memory_order_relaxed);
-    y = g_rawY.load(std::memory_order_relaxed);
+    x = g_rawX.exchange(0, std::memory_order_relaxed);
+    y = g_rawY.exchange(0, std::memory_order_relaxed);
     return true;
 }
 
