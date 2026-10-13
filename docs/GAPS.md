@@ -183,6 +183,46 @@ earned its keep by finding a bug the test suite could not have.
 
 ---
 
+### Every level runs
+
+Measured with \scripts/probe_level.ps1 -All\, which launches the title into
+each level in turn and reads what it drew. All fifteen come up.
+
+| | | | | | |
+|---|---|---|---|---|---|
+| saint_lo | ok | 145 | 1,211 | 514k |
+| lkbrn | ok | 90 | 3,269 | 1,946k |
+| chambois | ok | 46 | 2,211 | 584k |
+| credits | ok (reel) | 234 | 42 | 3k |
+| crssrds | ok | 120 | 1,365 | 526k |
+| alaise | ok | 125 | 1,091 | 375k |
+| orest | ok | 111 | 2,046 | 992k |
+| uelplnt | ok | 127 | 1,356 | 591k |
+| hostage | ok | 91 | 2,934 | 888k |
+| island | ok | 89 | 2,637 | 716k |
+| laison | ok | 104 | 2,079 | 633k |
+| mace2 | ok | 113 | 1,731 | 675k |
+| mayenne | ok | 127 | 1,582 | 608k |
+| 
+ightd | ok | 118 | 1,946 | 735k |
+| stbert | ok | 88 | 2,347 | 691k |
+
+\credits\ is the end-of-game reel rather than a playable level: 0.7 MB of
+\code against 17-30 MB for a real one, and rolling names legitimately draws a
+few dozen things a frame. It was confirmed by eye - the credits roll at 234
+fps - after a first pass wrongly reported it as broken. The probe now judges
+it on streaming rather than draw count.
+
+The frame rates here are not a benchmark. They are whatever the machine was
+doing, and a competing build on the same box will drag them down; the probe
+records free memory beside each reading so a low number is not mistaken for
+the project's fault. What is reliable is that every level streamed its own
+archives and drew a world.
+
+Playtesting found one bug none of this would have caught: in \lkbrn\, being
+shot in a vehicle empties the 3D world while the HUD keeps drawing. See the
+gap list above.
+
 ## Performance
 
 Not a correctness gap, but measured:

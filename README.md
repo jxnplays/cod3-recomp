@@ -105,9 +105,16 @@ Small list, but it is measured rather than inherited. Saint-Lô (`saint_lo`)
 was run end-to-end on this build: it loads, streams its archives, and renders —
 **299 fps, 74 files, 195 MB read**, at 1280x720.
 
-That is **one of fifteen levels.** The other fourteen are compiled and linked;
-we have not run them. If you are the first to try one, please open an issue
-either way.
+**All fifteen levels now run.** Each was launched on its own with
+\scripts/probe_level.ps1\ and confirmed to stream its archives and draw a
+world: \saint_lo\ 145 fps, \lkbrn\ 90, \chambois\ 46, \credits\ 234 (the end
+reel), \crssrds\ 120, \alaise\ 125, \orest\ 111, \uelplnt\ 127, \hostage91, \island\ 89, \laison\ 104, \mace2\ 113, \mayenne\ 127, ightd\ 118,
+\stbert\ 88. \docs/GAPS.md\ has the table.
+
+That says each level loads and renders. It does not say the whole campaign
+plays start to finish, and one bug found only by playing is still open: in
+\lkbrn\, being shot in a vehicle empties the 3D world for several seconds
+while the HUD keeps drawing.
 
 Measured and confirmed:
 
