@@ -274,6 +274,16 @@ CoD3.exe --help
 
 ---
 
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers how to submit a change, which parts
+of the repository are most useful to work on, and the house rule: a number
+should be something someone measured.
+
+Two things to know before you start — you need your own copy of the game
+(nothing of it is in this repository), and most of the code here is
+FrankHUN88453's under BSD 3-Clause rather than ours.
+
 ## Roadmap
 
 **Call of Duty 3 Remastered.** The port is the foundation; the remaster is the
