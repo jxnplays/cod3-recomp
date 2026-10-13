@@ -903,9 +903,33 @@ namespace
                         execQueued = true;
                         if (const char* exec = getenv("COD3_EXEC"))
                         {
-                            std::string lines(exec);
-                            for (char& c : lines) if (c == ';') c = '\n';
-                            Kernel::QueueConsoleCommand(lines);
+                            // One command per call. Semicolons are what
+                            // Cbuf_AddText separates on, so a run of commands
+                            // split on them is queued as separate commands;
+                            // newlines are only tidy separators, and are not
+                            // left in to become part of a command's text.
+                            // This used to hand the whole string over at once
+                            // with its semicolons replaced by newlines, which
+                            // the title read as a single command whose first
+                            // token was "40:cg_fov" - so a run of three
+                            // commands ran none of them.
+                            std::string all(exec);
+                            size_t at = 0;
+                            while (at <= all.size())
+                            {
+                                size_t stop = all.find_first_of(";\n", at);
+                                if (stop == std::string::npos) stop = all.size();
+                                std::string line = all.substr(at, stop - at);
+
+                                size_t first = line.find_first_not_of(" \t");
+                                if (first != std::string::npos)
+                                {
+                                    size_t last = line.find_last_not_of(" \t");
+                                    Kernel::QueueConsoleCommand(line.substr(first, last - first + 1));
+                                }
+                                if (stop == all.size()) break;
+                                at = stop + 1;
+                            }
                         }
                     }
                 }
