@@ -139,8 +139,20 @@ depends on Clang intrinsics and the `alias` attribute used for function hooking)
 and Visual Studio or the Visual Studio Build Tools for the Windows SDK headers
 and `rc.exe`. A PowerShell 5+ shell.
 
-Put your `default.xex` in `CoD3RecompLib/private/` first. Nothing of the game is
-committed, so there is nothing to clone and run until you supply it.
+A user with an extracted COD3 folder can build the `.exe`. One folder is the requirement:
+
+```
+<game>\default.xex
+<game>\sp\<level>\<level>.dll     (15 levels, discovered automatically)
+```
+
+Three ways to point the scripts at it:
+
+1. Pass `-GameRoot` to `recompile.ps1` or `recompile_level.ps1`.
+2. Run `CoD3.exe --game` or `--iso` once; it records the path in `game.path`.
+3. Drop a `game/` folder beside the repo.
+
+The scripts search all three and copy the executable and level DLLs out themselves.
 
 ### 1. Patch the XenonRecomp submodule
 
