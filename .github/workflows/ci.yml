@@ -62,29 +62,58 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
 
-      - name: Set up LLVM and the Windows SDK environment
+      # LLVM only. Visual Studio is NOT installed here: the runner image
+      # already carries it, and `choco install visualstudio2022buildtools`
+      # does not put vcvars64.bat where anything expects to find it - that
+      # was the first version of this job and it failed on exactly that.
+      - name: Pin LLVM
         shell: pwsh
         run: |
           choco install llvm --version=20.1.8 -y --no-progress
-          choco install visualstudio2022buildtools -y --no-progress
-          Write-Host "installed"
+          if (-not (Test-Path 'C:\Program Files\LLVM\bin\clang-cl.exe')) { throw "clang-cl not found after install" }
+          clang-cl --version
 
-      # The generated game code needs clang intrinsics and the `alias`
-      # attribute, so the tools are built with clang-cl here for the same
-      # reason recompile.ps1 does it.
+      # Glob rather than name a path, the way recompile.ps1 does. That is what
+      # lets the job survive a change of Visual Studio version or edition.
+      - name: Locate Visual Studio, CMake and Ninja
+        id: env
+        shell: pwsh
+        run: |
+          $vcvars = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue) |
+                     Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $vcvars) { throw 'vcvars64.bat not found; is Visual Studio on this runner?' }
+          Write-Host "vcvars: $vcvars"
+          "vcvars=$vcvars" >> $env:GITHUB_OUTPUT
+
+          $cmake = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' -ErrorAction SilentlyContinue) |
+                    Sort-Object FullName -Descending | Select-Object -First 1
+          $ninja = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe' -ErrorAction SilentlyContinue) |
+                    Sort-Object FullName -Descending | Select-Object -First 1
+          if ($cmake) { Write-Host "cmake: $($cmake.FullName)"; "cmake_dir=$($cmake.DirectoryName)" >> $env:GITHUB_OUTPUT }
+          else { Write-Host 'cmake not inside Visual Studio; will use PATH' }
+          if ($ninja) { Write-Host "ninja: $($ninja.FullName)"; "ninja_dir=$($ninja.DirectoryName)" >> $env:GITHUB_OUTPUT }
+          else { Write-Host 'ninja not inside Visual Studio; will use PATH' }
+
       # XenonRecomp and XenonAnalyse only. CoD3Scan and PpcAsm are separate
       # CMake projects under tools/ and are not wired into this build; adding
       # them is the obvious next step for whoever wants the job to cover more.
       - name: Build XenonRecomp and XenonAnalyse
         shell: pwsh
+        env:
+          VCVARS: ${{ steps.env.outputs.vcvars }}
+          CMAKE_DIR: ${{ steps.env.outputs.cmake_dir }}
+          NINJA_DIR: ${{ steps.env.outputs.ninja_dir }}
         run: |
-          $vcvars = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat' |
-                    Select-Object -First 1 -ExpandProperty FullName
-          $cmake = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
-          $ninja = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
-          $env:PATH = "$cmake;$ninja;C:\Program Files\LLVM\bin;$env:PATH"
-          & cmd /c "`"$vcvars`" >nul 2>&1 && cmake -S tools/XenonRecomp -B tools/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl && cmake --build tools/build --target XenonRecomp XenonAnalyse --parallel 4"
-          if ($LASTEXITCODE -ne 0) { throw "XenonRecomp failed to build" }
+          $parts = @('C:\Program Files\LLVM\bin')
+          if ($env:CMAKE_DIR) { $parts += $env:CMAKE_DIR }
+          if ($env:NINJA_DIR) { $parts += $env:NINJA_DIR }
+          $env:PATH = ($parts -join ';') + ';' + $env:PATH
+
+          # vcvars64.bat sets the compiler environment inside its own cmd shell,
+          # so the whole configure-and-build has to happen in one `cmd /c`.
+          $inner = "cmake -S tools/XenonRecomp -B tools/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl && cmake --build tools/build --target XenonRecomp XenonAnalyse --parallel 4"
+          & cmd /c "`"$($env:VCVARS)`" >nul 2>&1 && $inner"
+          if ($LASTEXITCODE -ne 0) { throw "XenonRecomp failed to build (exit $LASTEXITCODE)" }
           if (-not (Test-Path 'tools/build/XenonRecomp/XenonRecomp.exe')) { throw "XenonRecomp.exe was not produced" }
           Write-Host "XenonRecomp and XenonAnalyse built"
 
