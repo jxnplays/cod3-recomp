@@ -127,6 +127,60 @@ added instructions have no tests at all.
 Everything visual above sits on top of that. A miscompile in a patch would look
 like a rendering bug, and we currently have no way to tell the two apart.
 
+### The world stops rendering while the HUD does — Blkbrn, vehicles
+
+Found on `blkbrn` by playtesting, not by a test. Being shot while in the
+convoy tank — an RPG, or an enemy tank — blacks the screen for five to ten
+seconds, then it comes back by itself. It stops when the player dies.
+
+**It is not a black screen.** The HUD keeps drawing throughout. Captured
+with F12 during the event, the vehicle compass, the red damage chevron, the
+grenade icon and the crosshair are all present and correct. Everything above
+the HUD is empty.
+
+Measured on that capture: 44 sample points across the upper two thirds of
+the frame are **pure black, zero lit**, while 168 sample points inside the
+compass are lit. The file is 121 KB against 1.2–2.7 MB for a normal frame.
+The world is not dark or miscoloured; nothing is written there at all.
+
+**What it is not**, each checked rather than assumed:
+
+- **Not dropped draws.** `COD3_SKIPLOG=1`, which fires only when the skip
+  counts change between frames, never fired during the event.
+- **Not a GPU stall.** "workers waited 0.00 s for the GPU" throughout.
+- **Not a crash or an exception.** No `RtlRaiseException`, no device
+  removal, no watchdog reset. The game survived and carried on.
+- **Not the renderer falling over.** 2,945 draws and 1.18M triangles a frame
+  at ~100 fps, steady, across the event.
+- **Not a render target or viewport mismatch.** The captured frame's targets
+  and viewports match a normal frame closely — scene pass 520/520/-312/312
+  into 3600×2492 in both.
+- **Not a shader set difference.** Six vertex shaders appear only in the
+  black frame, but they account for 32,337 of 1,448,591 indices — 2.2%. That
+  cannot empty the screen.
+- **Not a near-empty draw list.** The captured frame submits 1.45M indices,
+  against 2.29M in a normal one.
+
+So the world is submitted, with correct targets, viewports and depth state,
+at full rate — and does not appear. The HUD, which draws afterwards in screen
+space, is unaffected.
+
+**Most likely, still unproven:** the pass that resolves the rendered scene
+into the backbuffer runs wrong for those frames. `resolves` is counted (22 a
+frame in normal play) but the frame dump does not expose which surface was
+resolved, so this is inference from the symptom rather than a measurement.
+
+**To attack it next,** capture the frames either side of the transition.
+`COD3_PICTURES=<second>` logs the frames after that second in full and
+pictures their draws one by one, but it needs the second the event actually
+happens on. Firing it at a guessed second missed the event once, because the
+game had not reached the convoy yet. Someone reproducing it should note the
+time and say so.
+
+Also worth noting: the dead giveaway is that this is **vehicle-specific** and
+Blkbrn is one of the fourteen levels nobody had tested. The playtesting
+earned its keep by finding a bug the test suite could not have.
+
 ---
 
 ## Performance
