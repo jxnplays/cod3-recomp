@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -33,6 +34,21 @@ namespace
     constexpr uint16_t PadY         = 0x8000;
 
     constexpr int16_t StickFull = 32767;
+
+    // A stick at rest that is not at rest.
+    //
+    // Every stick drifts a little - worn pots, a loose gimbal, a controller
+    // that has been knocked. This one rested at -364 on X and +473 on Y, and
+    // that was enough to break the game: below, the pad's axes were allowed
+    // to overwrite the keyboard and the mouse whenever they were non-zero, so
+    // a drifting stick silently won and WASD and the mouse did nothing. It
+    // looked exactly like broken input, in a level, with the keyboard
+    // confirmed to be reaching the title.
+    //
+    // Anything inside this is treated as centred. It is 5% of the stick's
+    // travel, comfortably under what a person can hold off-centre on purpose
+    // and comfortably over the drift of a healthy stick.
+    constexpr int StickDeadzone = 1600;
 
     struct XInputGamepad
     {
@@ -567,12 +583,16 @@ namespace
                 pad.buttons |= state.gamepad.buttons;
                 pad.leftTrigger = std::max(pad.leftTrigger, state.gamepad.leftTrigger);
                 pad.rightTrigger = std::max(pad.rightTrigger, state.gamepad.rightTrigger);
-                if (state.gamepad.thumbLX != 0 || state.gamepad.thumbLY != 0)
+                // A pad's axes only take over where it has actually been pushed.
+                // Inside the deadzone it is a stick nobody is touching, and
+                // it must not cancel the keyboard or the mouse: see
+                // StickDeadzone above for what that cost.
+                if (std::abs(state.gamepad.thumbLX) > StickDeadzone || std::abs(state.gamepad.thumbLY) > StickDeadzone)
                 {
                     pad.thumbLX = state.gamepad.thumbLX;
                     pad.thumbLY = state.gamepad.thumbLY;
                 }
-                if (state.gamepad.thumbRX != 0 || state.gamepad.thumbRY != 0)
+                if (std::abs(state.gamepad.thumbRX) > StickDeadzone || std::abs(state.gamepad.thumbRY) > StickDeadzone)
                 {
                     pad.thumbRX = state.gamepad.thumbRX;
                     pad.thumbRY = state.gamepad.thumbRY;
