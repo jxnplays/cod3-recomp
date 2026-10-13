@@ -40,13 +40,30 @@ foreach ($tool in @($Recomp, $Analyse, $Scan)) {
 }
 
 # Where the installed game is: named, or next to the repository, or where
-# game.path (written by the installer beside the executable) points.
+# game.path points. The installer writes game.path BESIDE THE EXECUTABLE,
+# which is build\CoD3Host\ where the build system puts it, so both that and the
+# repository root are read - recompile.ps1 does the same. Only the root one
+# used to be looked at and nothing ever copied between the two, so a user who
+# ran CoD3.exe --game got a game.path these scripts could not see.
 if ($GameRoot -eq '') {
     foreach ($candidate in @((Join-Path $Root 'game'), 'D:\Games\x360\game')) {
         if (Test-Path (Join-Path $candidate 'default.xex')) { $GameRoot = $candidate; break }
     }
-    $GamePath = Join-Path $Root 'game.path'
-    if ($GameRoot -eq '' -and (Test-Path $GamePath)) { $GameRoot = (Get-Content $GamePath -Raw).Trim() }
+    if ($GameRoot -eq '') {
+        foreach ($where in @((Join-Path $Root 'game.path'),
+                             (Join-Path $Root 'build\CoD3Host\game.path'),
+                             (Join-Path $Root 'CoD3Host\game.path'))) {
+            if (-not (Test-Path $where)) { continue }
+            $recorded = (Get-Content $where -Raw).Trim()
+            if ($recorded -eq '') { continue }
+            if (-not (Test-Path (Join-Path $recorded 'default.xex'))) {
+                Write-Host "$where points at $recorded, which no longer holds the game; skipping it" -ForegroundColor Yellow
+                continue
+            }
+            $GameRoot = $recorded
+            break
+        }
+    }
     if ($GameRoot -eq '') { throw 'the installed game was not found; pass -GameRoot' }
 }
 

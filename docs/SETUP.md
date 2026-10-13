@@ -126,6 +126,24 @@ as far as you can go, and you have verified the build works.
 
 ---
 
+## 4b. Build the level scanner
+
+`recompile_level.ps1` needs `tools\build-scan\CoD3Scan.exe`, and **no script in
+the repository builds it** — `recompile.ps1` builds XenonRecomp and
+XenonAnalyse only. Without this, step 6b stops with
+`CoD3Scan.exe is missing; build the tools first`.
+
+It is a separate CMake project because it pulls in XenonRecomp's libraries:
+
+```powershell
+$bt = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
+& cmd /c "`"$bt\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>&1 && set PATH=$bt\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;$bt\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\PROGRA~1\LLVM\bin;%PATH% && cmake -S tools/CoD3Scan -B tools/build-scan -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl && cmake --build tools/build-scan --target CoD3Scan --parallel 4"
+```
+
+Both `CMAKE_C_COMPILER` and `CMAKE_CXX_COMPILER` have to be named. The project
+adds XenonRecomp as a subdirectory, and CMake refuses a mixed clang/clang-cl
+pair — which is what it assumes when only the C++ one is given.
+
 ## 5. Supply your copy of the game
 
 **You need an extracted Xbox 360 game folder — and nothing else.** If you
@@ -145,7 +163,8 @@ Any of these three makes it work:
 
 **A. Let the host install it, and record where it went.** Run the
 executable once against your disc image or extracted folder. It writes
-`game.path` at the repository root, and both recompile scripts read it.
+`game.path` **beside the executable**, which is `build\CoD3Host\`, and both
+recompile scripts look there as well as at the repository root.
 
 ```powershell
 # from a disc image
@@ -156,6 +175,10 @@ executable once against your disc image or extracted folder. It writes
 
 .\build\CoD3Host\CoD3.exe --install-only     # install, do not start the game
 ```
+
+If the game is later moved or the drive letter changes, the stale path is
+reported and skipped rather than believed — delete the `game.path` and run the
+executable again, or just use `-GameRoot`.
 
 **B. Or point the scripts at it directly.** Works without running the
 host at all — useful if you want to check the path before installing:

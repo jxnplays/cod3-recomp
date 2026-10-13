@@ -72,18 +72,42 @@ $Recomp      = Join-Path $ToolBuild 'XenonRecomp\XenonRecomp.exe'
 $Analyse     = Join-Path $ToolBuild 'XenonAnalyse\XenonAnalyse.exe'
 
 # Where the game is. A copy dropped into CoD3RecompLib/private/ is used as-is;
-# failing that, an extracted game folder - the one the installer beside the
-# executable records in game.path, or a game/ directory beside the repository
-# - is used, and the executable is copied out of it. That way someone who has
-# extracted their disc and nothing else can point this at the folder and have
-# it work, instead of having to know that default.xex belongs in private/.
+# failing that, an extracted game folder - the one the installer records in
+# game.path, or a game/ directory beside the repository - is used, and the
+# executable is copied out of it. That way someone who has extracted their
+# disc and nothing else can point this at the folder and have it work, instead
+# of having to know that default.xex belongs in private/.
 #
 # recompile_level.ps1 finds its game the same way and for the same reason; the
 # two must agree, or the main game builds and the levels do not.
+
+# game.path is written by the installer BESIDE THE EXECUTABLE, which is
+# build\CoD3Host\ where the build system puts it. Both places are read, in
+# that order, because only the root one used to be looked at and the two were
+# never connected: a user who ran CoD3.exe --game, exactly as the README says
+# to, got a game.path the scripts could not see. Anything that names a folder
+# which no longer holds default.xex is skipped rather than believed, which is
+# what happens when the game is moved or a drive letter changes.
+function Find-RecordedGameRoot {
+    $found = ''
+    foreach ($where in @((Join-Path $Root 'game.path'),
+                         (Join-Path $Root 'build\CoD3Host\game.path'),
+                         (Join-Path $Root 'CoD3Host\game.path'))) {
+        if (-not (Test-Path $where)) { continue }
+        $recorded = (Get-Content $where -Raw).Trim()
+        if ($recorded -eq '') { continue }
+        if (-not (Test-Path (Join-Path $recorded 'default.xex'))) {
+            Write-Host "$where points at $recorded, which no longer holds the game; skipping it" -ForegroundColor Yellow
+            continue
+        }
+        $found = $recorded
+        break
+    }
+    return $found
+}
 if (-not (Test-Path $Xex)) {
     $gameRoot = $GameRoot
-    $gamePath = Join-Path $Root 'game.path'
-    if ($gameRoot -eq '' -and (Test-Path $gamePath)) { $gameRoot = (Get-Content $gamePath -Raw).Trim() }
+    if ($gameRoot -eq '') { $gameRoot = Find-RecordedGameRoot }
     if (($gameRoot -eq '' -or -not (Test-Path (Join-Path $gameRoot 'default.xex'))) -and $GameRoot -eq '') {
         $nearby = Join-Path $Root 'game'
         if (Test-Path (Join-Path $nearby 'default.xex')) { $gameRoot = $nearby }

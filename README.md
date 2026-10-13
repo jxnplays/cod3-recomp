@@ -167,6 +167,9 @@ Three ways to point the scripts at it:
 3. Drop a `game/` folder beside the repo.
 
 The scripts search all three and copy the executable and level DLLs out themselves.
+`game.path` is written beside the executable, which is `build\CoD3Host\`, and
+both scripts look there as well as at the repository root. A `game.path` naming
+a folder that no longer holds the game is reported and skipped, not believed.
 
 ### 1. Patch the XenonRecomp submodule
 
