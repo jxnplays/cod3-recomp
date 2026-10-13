@@ -760,6 +760,48 @@ namespace
                     if (found == 0) printf("scan: \"%s\" is nowhere in guest memory\n", scanFor);
                     fflush(stdout);
                 }
+
+                // COD3_DUMP=address:bytes: what is at one guest address, once.
+                // COD3_SCANMEM shows what is around a string it was told to
+                // look for, which finds a table but does not give all of it:
+                // the cvar name table runs for kilobytes and only the window
+                // either side of the match comes back. This is the other half
+                // - name an address, get the whole run of it, so a table can
+                // be read out in full rather than sampled.
+                //
+                // Read-only, and nothing is written: this reads the guest's
+                // memory and prints it, which is all a scan does too.
+                static const char* const dumpAt = getenv("COD3_DUMP");
+                static bool g_dumped = false;
+                if (dumpAt != nullptr && dumpAt[0] != 0 && newSecond && clockSecond % 10 == 5 && !g_dumped)
+                {
+                    g_dumped = true;
+                    const uint64_t start = strtoull(dumpAt, nullptr, 16);
+                    long length = 2048;
+                    const char* colon = strchr(dumpAt, ':');
+                    if (colon != nullptr) length = strtol(colon + 1, nullptr, 0);
+                    if (length <= 0) length = 2048;
+                    if (length > 65536) length = 65536;
+                    if (start < 0x100000000ull)
+                    {
+                        std::string text;
+                        for (long k = 0; k < length; k++)
+                        {
+                            const uint8_t c = Guest::Base[start + k];
+                            text += (c >= 32 && c < 127) ? char(c) : (c == 0 ? '|' : '.');
+                        }
+                        // Line breaks on the NULs that separate entries, so a
+                        // table reads as a list rather than one long row.
+                        for (char& c : text) if (c == '|') c = '\n';
+                        printf("dump: 0x%08llX (%ld bytes)\n%s\n",
+                               (unsigned long long)start, length, text.c_str());
+                    }
+                    else
+                    {
+                        printf("dump: 0x%08llX is outside the guest\n", (unsigned long long)start);
+                    }
+                    fflush(stdout);
+                }
                 // COD3_MAP=name[,second]: the level started from the front
                 // end at that second (twelve by default; the main menu is
                 // up by then with COD3_PAD="5:start 8:a") by the console
