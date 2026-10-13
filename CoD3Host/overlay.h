@@ -23,6 +23,12 @@ namespace Overlay
     // was the menu's.
     bool HandleMessage(void* hwnd, uint32_t message, uint64_t wParam, int64_t lParam);
 
+// The mod menu tab: the title's own console variables. Fire-and-forget,
+// because this build cannot read a value back (Com_Printf is compiled out of
+// it), so a tick means the menu set it rather than that the game confirmed
+// it. What is not in the list, and why, is at the top of mods.cpp.
+bool DrawModsTab();
+
     // The settings menu or the console is up: the keys and the mouse are
     // theirs, not the title's.
     bool IsOpen();

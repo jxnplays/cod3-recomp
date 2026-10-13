@@ -348,6 +348,18 @@ namespace
                     }
                     ImGui::EndTabItem();
                 }
+
+                // The mod menu. Not under Apply/Cancel: each row takes effect
+                // when it is changed, because these go straight to the title's
+                // command buffer rather than through the settings file, and
+                // holding them behind a button made them look like settings
+                // that did nothing.
+                if (ImGui::BeginTabItem("Mods"))
+                {
+                    Overlay::DrawModsTab();
+                    ImGui::EndTabItem();
+                }
+
                 ImGui::EndTabBar();
             }
             ImGui::Separator();

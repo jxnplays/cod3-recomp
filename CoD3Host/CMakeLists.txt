@@ -95,6 +95,7 @@ add_executable(CoD3 WIN32
     "input.cpp"
     "settings.cpp"
     "overlay.cpp"
+    "mods.cpp"
     "../thirdparty/imgui/imgui.cpp"
     "../thirdparty/imgui/imgui_draw.cpp"
     "../thirdparty/imgui/imgui_tables.cpp"
