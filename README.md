@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/logo.png" alt="COD3 Recomp" width="800">
+  <img src="docs/logo.png" alt="COD3 Reborn" width="800">
 </div>
 
 <div align="center">
@@ -12,7 +12,7 @@
 
 </div>
 
-# COD3 Recomp
+# COD3 Reborn
 
 **Call of Duty 3** (Xbox 360, 2007) running as a **native Windows PC binary**.
 
