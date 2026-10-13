@@ -123,9 +123,10 @@ Ours:
 - **Frame rate is not understood.** The same build and level have been observed
   at 22 fps, 144 fps and 299 fps. We do not yet know what the difference is, and
   we are not going to guess in public.
-- 40 of Xenia's instruction tests fail, all sharing one root cause in the
-  four-argument `make_full_test_constant` macro and the `clrldi r3,r3,32` inside
-  it. Not yet solved.
+- 73 failing checks across 27 of Xenia's 165 instruction tests, all sharing
+  one root cause in the four-argument `make_full_test_constant` macro and the
+  `clrldi r3,r3,32` inside it. Not yet solved. (`verify.ps1 -All` prints the
+  first 40 failing lines, which is why the console output understates this.)
 
 [STATUS.md](STATUS.md) carries the detail and the measurements behind the
 inherited work.
@@ -134,10 +135,23 @@ inherited work.
 
 ## Building
 
+> **A clone alone will not build the game.** The tools build from a bare
+> checkout in about 30 seconds. `CoD3.exe` needs your own legally owned copy
+> of Call of Duty 3, because the game code, data, audio and shaders are
+> Activision's and are not committed here — there is no `.xex` in this
+> repository and there never will be. Expect **2–4 hours** for the first
+> full build, nearly all of it waiting.
+
+**[docs/SETUP.md](docs/SETUP.md) is the step-by-step tutorial**, including
+prerequisites, what each step costs in time and disk, every environment
+variable the host understands, and a troubleshooting section. Start there.
+
+The short version:
+
 Requires **CMake 3.20+**, **Ninja**, **Clang** (not optional — the generated code
 depends on Clang intrinsics and the `alias` attribute used for function hooking),
 and Visual Studio or the Visual Studio Build Tools for the Windows SDK headers
-and `rc.exe`. A PowerShell 5+ shell.
+and `rc.exe`. A PowerShell 5+ shell. Pin **LLVM 20.1.8**.
 
 A user with an extracted COD3 folder can build the `.exe`. One folder is the requirement:
 
@@ -230,9 +244,11 @@ You should end up with `build/CoD3Host/CoD3.exe`.
 .\scripts\verify.ps1 -All   # plus the instruction tests
 ```
 
-`-All` currently reports **40 failures**, all from one root cause in Xenia's
-test macros (see [Known gaps](#known-gaps)). That is the known baseline, not a
-regression you introduced.
+`-All` runs 165 of Xenia's instruction tests and currently reports **73
+failing checks across 27 tests**, all from one root cause in Xenia's test
+macros (see [Known gaps](#known-gaps)). That is the known baseline, not a
+regression you introduced. It prints the first 40 failing lines, so the output
+you see is shorter than the number of failures.
 
 ## Running
 
