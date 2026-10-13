@@ -59,8 +59,18 @@ jobs:
     name: Tools build
     runs-on: windows-latest
     steps:
+      # The submodule comes WITH the patch applied, which is what the local
+      # build has. Without it this job sees an empty tools/XenonRecomp and
+      # CMake cannot find a source directory - which is what the first run of
+      # this job did.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-python@v5
+
+      - name: Apply the patch
+        shell: pwsh
+        run: git -C tools/XenonRecomp apply ..\patches\XenonRecomp.patch
 
       # LLVM only. Visual Studio is NOT installed here: the runner image
       # already carries it, and `choco install visualstudio2022buildtools`
