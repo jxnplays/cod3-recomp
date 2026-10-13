@@ -1,0 +1,97 @@
+name: CI
+
+# There is no game data here and there never will be: default.xex is
+# copyrighted and lives in CoD3RecompLib/private/, which is not committed.
+# So this cannot build the title, and does not pretend to. What it can do is
+# the part that is pure source - the tools, and the submodule patch that the
+# recompiler depends on - which is where a contributor's change most often
+# breaks something.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  patch:
+    name: XenonRecomp patch applies
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Check the patch is well formed
+        # A patch that has been re-saved with PowerShell redirection is UTF-16
+        # and git rejects it with "No valid patches in input". That is silent
+        # until someone tries to build, so fail here instead.
+        shell: pwsh
+        run: |
+          $p = 'tools/patches/XenonRecomp.patch'
+          if (-not (Test-Path $p)) { throw "$p is missing" }
+          $bytes = [System.IO.File]::ReadAllBytes($p)
+          if ($bytes.Length -lt 3) { throw "$p is empty" }
+          # UTF-16LE/UTF-16BE both start with a byte-order mark.
+          if ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { throw "$p is UTF-16LE; re-save it as UTF-8" }
+          if ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { throw "$p is UTF-16BE; re-save it as UTF-8" }
+          Write-Host "$p is $($bytes.Length) bytes, 8-bit clean"
+
+      - name: Apply it to a pristine XenonRecomp
+        shell: pwsh
+        run: |
+          git submodule update --init tools/XenonRecomp
+          git -C tools/XenonRecomp apply --check ..\patches\XenonRecomp.patch
+          git -C tools/XenonRecomp apply ..\patches\XenonRecomp.patch
+          Write-Host "patch applied cleanly to the pinned submodule"
+
+      - name: The patch does not touch anything it should not
+        shell: pwsh
+        run: |
+          # The patch must change only the translator's sources. If it ever
+          # grows a binary or a generated file, that is a bug in how it was
+          # made, not something to ship.
+          $changed = git -C tools/XenonRecomp diff --name-only
+          $bad = $changed | Where-Object { $_ -notmatch '\.(cpp|h|hpp|md|txt)$' }
+          if ($bad) { throw "patch touches non-source files: $($bad -join ', ')" }
+          Write-Host "$($changed.Count) source files patched"
+
+  tools:
+    name: Tools build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+
+      - name: Set up LLVM and the Windows SDK environment
+        shell: pwsh
+        run: |
+          choco install llvm --version=20.1.8 -y --no-progress
+          choco install visualstudio2022buildtools -y --no-progress
+          Write-Host "installed"
+
+      # The generated game code needs clang intrinsics and the `alias`
+      # attribute, so the tools are built with clang-cl here for the same
+      # reason recompile.ps1 does it.
+      # XenonRecomp and XenonAnalyse only. CoD3Scan and PpcAsm are separate
+      # CMake projects under tools/ and are not wired into this build; adding
+      # them is the obvious next step for whoever wants the job to cover more.
+      - name: Build XenonRecomp and XenonAnalyse
+        shell: pwsh
+        run: |
+          $vcvars = Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat' |
+                    Select-Object -First 1 -ExpandProperty FullName
+          $cmake = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+          $ninja = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
+          $env:PATH = "$cmake;$ninja;C:\Program Files\LLVM\bin;$env:PATH"
+          & cmd /c "`"$vcvars`" >nul 2>&1 && cmake -S tools/XenonRecomp -B tools/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl && cmake --build tools/build --target XenonRecomp XenonAnalyse --parallel 4"
+          if ($LASTEXITCODE -ne 0) { throw "XenonRecomp failed to build" }
+          if (-not (Test-Path 'tools/build/XenonRecomp/XenonRecomp.exe')) { throw "XenonRecomp.exe was not produced" }
+          Write-Host "XenonRecomp and XenonAnalyse built"
+
+      - name: Uploads
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tools
+          path: tools/build/**/XenonRecomp.exe
+          if-no-files-found: warn
