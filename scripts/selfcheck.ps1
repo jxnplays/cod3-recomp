@@ -447,6 +447,83 @@ if ($settings -match 'static bool sentPrompts = false') { Pass 'the ps2 command 
 else { Fail 'ps2 is sent repeatedly' 'no once-per-process guard in TitleCommandsChanged' }
 
 # ---------------------------------------------------------------------------
+Section 'The menu tells the truth'
+
+# Every variable the Mods tab sends must exist in the title.
+#
+# One did not. cg_showLocationalDamage is not a variable in this game - the
+# real name is r_showLocationalDamage - so that control did nothing, and
+# because Com_Printf is compiled out it said nothing either. The row looked
+# exactly like a working one.
+#
+# It is easy to repeat that mistake, because the names are plausible and an
+# invented one is indistinguishable in the source from a real one. It happened
+# again while adding the new rows: six of them were written from memory and had
+# to be taken back out. So every row is checked against docs/cvars.txt, and
+# duplicates are rejected - a repeated row would show one control twice
+# sharing one state.
+$mods = Get-Content (Join-Path $Src 'mods.cpp') -Raw
+$cvars = [regex]::Matches($mods, '(?m)^\s*\{ "[^"]*"\s*,\s*"(?<cvar>[A-Za-z_][A-Za-z_0-9]*)"') |
+    ForEach-Object { $_.Groups['cvar'].Value }
+$table = Get-Content (Join-Path $Root 'docs\cvars.txt') -Raw
+if ($cvars.Count -eq 0) {
+    Fail 'the Mods tab variables could not be checked' 'no rows were parsed out of mods.cpp'
+} else {
+    $absent = @()
+    foreach ($c in ($cvars | Sort-Object -Unique)) {
+        if ($table -notmatch ('(?<![A-Za-z0-9_])' + [regex]::Escape($c) + '(?![A-Za-z0-9_])')) { $absent += $c }
+    }
+    if ($absent.Count -gt 0) {
+        Fail 'the Mods tab sends variables this game does not have' ("$($absent -join ', '). A control for one of these does nothing, and says nothing.")
+    } else {
+        $dupes = @($cvars | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+        if ($dupes.Count -gt 0) {
+            Fail 'the Mods tab has duplicate rows' ("$($dupes -join ', ') - one control, one state, listed twice")
+        } else {
+            Pass "all $($cvars.Count) Mods-tab variables exist in the title, and none is listed twice"
+        }
+    }
+}
+
+# The console must not advertise commands that do not exist.
+#
+# It did. The help line offered "god noclip give all timescale com_maxfps",
+# and none of those is a variable in this game; because the title's replies
+# were compiled out, typing one produced no error at all. So the console did
+# not look limited, it looked broken. This asserts every name it mentions is
+# real, which is the difference between "here is what you can do" and "here is
+# nothing".
+$helpLine = [regex]::Match($overlay, '(?m)^\s*ConsoleLine\("Examples: (?<examples>[^"]*)"').Groups['examples'].Value
+if ($helpLine -eq '') {
+    Fail 'the console examples could not be checked' 'the help line was not found in overlay.cpp'
+} else {
+    # Only the variable-shaped names are checked. "spmap" and "forest" are a
+    # command and a level, and they are not in the variable table because they
+    # are not variables - testing them would have flagged correct help text.
+    #
+    # And the cheats are named explicitly, because those are the ones that
+    # were advertised and do not exist.
+    $bogus = @()
+    foreach ($c in ([regex]::Matches($helpLine, '(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z_0-9]*)') | ForEach-Object { $_.Groups[1].Value })) {
+        if ($c -match '^(cg_|r_|CG_|Cg_)') {
+            if ($table -notmatch ('(?<![A-Za-z0-9_])' + [regex]::Escape($c) + '(?![A-Za-z0-9_])')) { $bogus += $c }
+        }
+    }
+    $cheats = @('god', 'noclip', 'notarget', 'give', 'giveall', 'timescale', 'com_maxfps')
+    $advertised = @()
+    foreach ($c in ([regex]::Matches($helpLine, '(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z_0-9]*)') | ForEach-Object { $_.Groups[1].Value })) {
+        if ($cheats -contains $c) { $advertised += $c }
+    }
+    if ($advertised.Count -gt 0) {
+        Fail 'the console advertises cheat commands this game does not have' ("$($advertised -join ', '). Not in the title's table, so they fail silently.")
+    } elseif ($bogus.Count -gt 0) {
+        Fail 'the console advertises variables this game does not have' ("$($bogus -join ', ').")
+    } else {
+        Pass 'every name the console help mentions exists in the title'
+    }
+}
+
+# ---------------------------------------------------------------------------
 Section 'Documentation must not claim more than was measured'
 
 # Every claim here that was wrong was a documentation claim, not a code one:

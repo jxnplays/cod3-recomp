@@ -20,10 +20,17 @@
 // player's state. Those need a different door into the game, and a menu row
 // that silently does nothing is worse than no row at all.
 //
-// What is here is the 82 cg_ and r_ variables that are real: crosshair, gun,
+// What is here is the cg_ and r_ variables that are real: crosshair, gun,
 // HUD alpha, compass, widescreen, letterbox, fog, fullbright, and the r_
 // debug set. That is the same idea as the "Vision Menu" and "Menu
 // Customization" entries in the menus this is modelled on.
+//
+// The header used to say 82 and there were 41. The count is not written here
+// on purpose: it was wrong twice; scripts/selfcheck.ps1 counts the rows and
+// checks every cvar against docs/cvars.txt instead.
+//
+// One row was not real: cg_showLocationalDamage, which does not exist in
+// this title, so that control did nothing and said nothing.
 
 #include "overlay.h"
 #include "kernel.h"
@@ -72,7 +79,7 @@ namespace
         { "Compass size",        "cg_hudCompassSize",       Kind::Slider, 0, 0, 3, nullptr, 0, "how large the compass is drawn" },
         { "Compass range",       "cg_hudCompassMaxRange",   Kind::Slider, 0, 100, 3000, nullptr, 0, "how far the compass shows" },
         { "Compass springy",     "cg_hudCompassSpringyPointers", Kind::Toggle, 0, 0, 1, kYesNo, 2, "compass markers ease into place" },
-        { "Damage direction",    "cg_showLocationalDamage", Kind::Toggle, 0, 0, 1, kYesNo, 2, "the arrow showing where a shot came from" },
+        { "Damage direction",    "r_showLocationalDamage", Kind::Toggle, 0, 0, 1, kYesNo, 2, "the arrow showing where a shot came from" },
         { "Damage icon width",   "cg_hudDamageIconWidth",   Kind::Slider, 0, 0, 200, nullptr, 0, "how wide the damage arcs are" },
         { "Objectives on screen","cg_hudObjectiveMaxHeight", Kind::Slider, 0, 0, 400, nullptr, 0, "how many objective markers show at once" },
         { "Objectives range",    "cg_hudObjectiveMaxRange", Kind::Slider, 0, 100, 4000, nullptr, 0, "how far an objective marker shows" },
@@ -109,7 +116,47 @@ namespace
         { "Show tri counts",     "r_showtricounts",         Kind::Toggle, 0, 0, 1, kYesNo, 2, "triangles drawn per frame" },
         { "Test shadows",        "r_testshadow",            Kind::Toggle, 0, 0, 1, kYesNo, 2, "shadow debug" },
         { "Verbose",             "r_verbose",               Kind::Slider, 0, 0, 3, nullptr, 0, "how much the renderer says" },
+// --- Renderer and scene, real and previously unreachable from the menu ------
+    { "Model LOD scale",     "r_lodbias",              Kind::Slider, 0, 0, 4, nullptr, 0, "how late models swap to their low detail" },
+    { "Sun and sky",         "r_loadsun",              Kind::Toggle, 0, 0, 1, kYesNo, 2, "the sun's texture; off leaves a blank sky" },
+    { "Save the sun",        "r_savesun",              Kind::Toggle, 0, 0, 1, kYesNo, 2, "keep the sun texture; costs a little" },
+    { "Draw entities",       "r_drawentities",         Kind::Toggle, 0, 0, 1, kYesNo, 2, "draw the players and weapons at all" },
+    { "Cull models",         "r_cullBModels",          Kind::Toggle, 0, 0, 1, kYesNo, 2, "hide models behind walls; faster" },
+    { "Cull world models",   "r_cullXModels",          Kind::Toggle, 0, 0, 1, kYesNo, 2, "hide scenery behind walls; faster" },
+    { "Lens flares",         "r_flares",               Kind::Toggle, 0, 0, 1, kYesNo, 2, "the flare off bright surfaces" },
+    { "Depth offset factor", "r_offsetfactor",         Kind::Slider, 0, 0, 2, nullptr, 0, "pulling surfaces toward the camera" },
+    { "Depth offset units",  "r_offsetunits",          Kind::Slider, 0, 0, 2, nullptr, 0, "the same, measured in world units" },
+    { "Finish every frame",  "r_finish",               Kind::Toggle, 0, 0, 1, kYesNo, 2, "wait for the GPU each frame; removes tearing" },
+    { "Swap delay",          "r_swapDelay",            Kind::Slider, 0, 0, 3, nullptr, 0, "frames to wait before swapping" },
+    { "Portals only",        "r_portalOnly",           Kind::Toggle, 0, 0, 1, kYesNo, 2, "draw only what is visible through a window" },
+
+    // --- HUD detail, also real and previously unreachable --------------------
+    { "Compass minimum radius", "cg_hudCompassMinRadius", Kind::Slider, 0, 0, 2, nullptr, 0, "how small the compass may get" },
+    { "Compass minimum range",  "cg_hudCompassMinRange",  Kind::Slider, 0, 0, 2, nullptr, 0, "how close the compass draws before fading" },
+    { "Objective rings",     "cg_hudObjectiveNumRings", Kind::Slider, 0, 0, 4, nullptr, 0, "how many rings are drawn on a waypoint" },
+    { "Objective ring time", "cg_hudObjectiveRingTime", Kind::Slider, 0, 0, 4, nullptr, 0, "how long a ring takes to close" },
+    { "Objective height",    "cg_hudObjectiveMinHeight", Kind::Slider, 0, 0, 2, nullptr, 0, "how high up the screen a waypoint may sit" },
+    { "Shellshock fade in",  "cg_shellshock_load",      Kind::Slider, 0, 0, 2, nullptr, 0, "how fast it fades in" },
+    { "Shellshock save",     "cg_shellshock_save",      Kind::Toggle, 0, 0, 1, kYesNo, 2, "keep the effect instead of dropping it" },
+    { "Draw 2D",             "CG_Draw2D",               Kind::Toggle, 0, 0, 1, kYesNo, 2, "the title's own 2D layer; off hides some HUD" },
+    { "View mode",           "Cg_view",                 Kind::Choice, 0, 0, 3, nullptr, 0, "the title's own view mode" },
+
+    // --- Diagnostics: the shader console and the memory reader ---------------
+    { "Shader debug log",    "r_vc_showlog",            Kind::Toggle, 0, 0, 1, kYesNo, 2, "print what the shader compiler is doing" },
+    { "Shader statistics",   "r_vc_stats",              Kind::Toggle, 0, 0, 1, kYesNo, 2, "counts of compiled and cached programs" },
+    { "Shader compile log",  "r_vc_makelog",            Kind::Toggle, 0, 0, 1, kYesNo, 2, "write the shader log out" },
+    { "Shader cache dump",   "r_vc_compile",            Kind::Toggle, 0, 0, 1, kYesNo, 2, "the title's own shader compile flag" },
+    { "Draw element profile","r_profileDrawElements",   Kind::Toggle, 0, 0, 1, kYesNo, 2, "per-draw timings" },
+    { "Set matrix stats",    "r_smc_stats",             Kind::Toggle, 0, 0, 1, kYesNo, 2, "statistics from the title's matrix cache" },
+    { "Flush matrix cache",  "r_smc_flush",             Kind::Toggle, 0, 0, 1, kYesNo, 2, "the title's own matrix cache flush" },
+    { "Memory info",         "r_meminfo",               Kind::Toggle, 0, 0, 1, kYesNo, 2, "print the video memory it is using" },
+    { "Speedometer",         "r_speeds",                Kind::Toggle, 0, 0, 1, kYesNo, 2, "the title's own speed counters" },
+    { "Sun light helper",    "r_sunhelp",               Kind::Toggle, 0, 0, 1, kYesNo, 2, "the title's sun light helper" },
+    { "Refresh all",         "r_norefresh",             Kind::Toggle, 0, 0, 1, kYesNo, 2, "ask for a full refresh after a change" },
+    { "Clear the screen",    "r_clear",                 Kind::Toggle, 0, 0, 1, kYesNo, 2, "the title's own clear flag" },
+    { "Log to file",         "r_logFile",               Kind::Toggle, 0, 0, 1, kYesNo, 2, "the title's file logging" },
     };
+
 
     constexpr int kRowCount = int(sizeof(kRows) / sizeof(kRows[0]));
 
@@ -128,7 +175,7 @@ namespace
     {
         if (std::string_view(r.cvar).rfind("cg_hud", 0) == 0 || std::string_view(r.cvar) == "cg_drawCrosshair"
             || std::string_view(r.cvar) == "cg_drawGun" || std::string_view(r.cvar) == "cg_drawStatus"
-            || std::string_view(r.cvar) == "cg_showLocationalDamage")
+            || std::string_view(r.cvar) == "r_showLocationalDamage")
             return "HUD";
         if (std::string_view(r.cvar).rfind("r_show", 0) == 0 || std::string_view(r.cvar) == "r_nocull"
             || std::string_view(r.cvar) == "r_noportals" || std::string_view(r.cvar) == "r_lockpvs"

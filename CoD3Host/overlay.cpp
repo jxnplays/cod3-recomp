@@ -102,7 +102,11 @@ namespace
         if (line == "help" || line == "?")
         {
             ConsoleLine("Commands go on the game's own command buffer, the way the chapter select runs \"spmap\".");
-            ConsoleLine("Examples: spmap forest   map_restart   cg_fov 80   timescale 0.5   god   noclip   give all   seta com_maxfps 60");
+            ConsoleLine("Examples: spmap forest   map_restart   cg_fov 80   r_lodscale 2   r_nocull 1   set r_drawentities 0");
+            ConsoleLine("There are no cheat commands here. This title exposes no variable for health,");
+            ConsoleLine("ammo, money or position, so there is nothing for the port to set - one of the");
+            ConsoleLine("usual names typed in does nothing, and says nothing, rather than failing.");
+            ConsoleLine("The Mods tab lists what does exist; docs/cvars.txt has the whole table.");
             ConsoleLine("The game's replies (Com_Printf) were compiled out of this build, so only this side's lines appear here.");
             ConsoleLine("clear: empties the log.   ` or ~ or Esc: closes the console.");
             return;
@@ -253,14 +257,12 @@ namespace
             {
                 if (ImGui::BeginTabItem("Graphics"))
                 {
-                    const char* renderers[] = { "DirectX 11", "DirectX 12 (not yet)", "Vulkan (not yet)" };
-                    int renderer = g_edit.renderer;
-                    if (ImGui::Combo("Renderer", &renderer, renderers, 3))
-                    {
-                        // Only the first exists; the others stay names for now.
-                        g_edit.renderer = 0;
-                    }
-                    if (renderer != 0) ImGui::TextDisabled("Only DirectX 11 is available for now.");
+                    // Only DirectX 11 exists. The other two used to be selectable
+                    // entries that silently snapped back to the first, which reads as
+                    // a broken control rather than an absent one.
+                    ImGui::TextDisabled("Renderer: DirectX 11");
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(DirectX 12 and Vulkan are not built, so there is nothing to select yet)");
                     const char* modes[] = { "Windowed", "Borderless full screen" };
                     ImGui::Combo("Window mode", &g_edit.windowMode, modes, 2);
                     ImGui::TextDisabled("Alt+Enter switches it too.");
