@@ -243,12 +243,13 @@ Substitute your own Visual Studio path. This whole line runs in one
 `cmd` because `vcvars64.bat` sets the compiler environment in its own
 shell.
 
-You should end up with `build\CoD3Host\CoD3.exe`, about 209 MB, and beside it a
-`buttons\` folder holding 38 PNGs. The build copies those in from
-`assets\buttons\` for you — they are the controller button icons the settings
-menu draws. If the folder is missing the menu says **"No icons found"** and
-falls back to text rather than drawing nothing, so a missing folder is
-visible rather than silent.
+You should end up with `build\CoD3Host\CoD3.exe`, about 209 MB.
+
+There is no button artwork beside it, and there is no `buttons\` folder. The
+in-game button prompts are the title's own - Activision drew them into COD3's
+font data - and they are switched with the `ps2` variable rather than replaced
+with images. The settings menu offers that, and the four control layouts the
+title ships, as **Control layout** and **Button prompts**.
 
 The FFmpeg DLLs need to be beside the executable too; audio does not work
 without them. `thirdparty/ffmpeg/README.md` says where they come from.
@@ -297,6 +298,25 @@ cd build\CoD3Host
 | `F12` | screenshot |
 | `` ` `` | the title's console |
 | `Escape` | pause |
+
+### What the settings menu offers
+
+Everything here is a setting in `CoD3Recomp.ini` beside the executable, and
+everything is opt-in from the console default.
+
+| Setting | Range | Notes |
+|---|---|---|
+| Aspect ratio | `16:9 (letterboxed)` or `Fill the window` | The console's default is the letterbox. Filling widens the mode the title is told about, so the field of view widens with the window instead of the picture being stretched. |
+| Field of view | 65 - 180 | 65 is the title's own. 180 is accepted without a fault; whether you want it is an eye question. |
+| Anti-aliasing | None, FXAA, MSAA 2x/4x/8x, MSAA 4x + FXAA | |
+| Mouse sensitivity | 0.1 - 10 | On a square-root curve, so 1.0 feels exactly as it did before and the top of the range does not clip. |
+| Control layout | Default, Lefty, SCI-FI / Tactical, Legacy | The title's own configs. Which physical button does what. |
+| Button prompts | Xbox, PlayStation | The title's `ps2` variable. Which symbols it draws on screen. |
+
+`COD3_XEX` chooses which title boots (`default.xex`, or `codmp_xenonf.xex`
+for multiplayer). Multiplayer does not run yet: its `.data` section
+overlaps the generated indirect call table, and it is not among the
+recompiled titles. See `docs/RESUME.md`.
 
 ---
 
@@ -360,7 +380,6 @@ $env:COD3_NOFILMS="1"           # skip the intro films
 | `COD3_SCANMEM=text` | report where a string sits in guest memory |
 | `COD3_DUMP=addr:bytes` | dump guest memory at an address |
 | `COD3_MOUSELOG=1` | log what mouse look took |
-| `COD3_ICONLOG=1` | say which stage a button icon failed to load at |
 | `COD3_SKIPLOG=1` | log frames where the renderer dropped a draw, and why |
 | `COD3_PICTURES=<second>` | dump the frames after that second in full |
 
