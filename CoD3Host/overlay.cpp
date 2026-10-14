@@ -617,6 +617,31 @@ namespace
             if (ImGui::Button("Close", ImVec2(140 * g_fontScale, 0))) open = false;
             if (dirty) { ImGui::SameLine(); ImGui::TextDisabled("(unapplied changes)"); }
             ImGui::TextDisabled("F11: this menu   F12: screenshot   ` (left of 1): console   Esc: back to the game");
+
+    // The pad, and what it can do here.
+    //
+    // A controller-only player could not even open this menu before - F11 is a
+    // key and the window procedure never sees a pad - so "Start opens it" is
+    // not a convenience, it is the only route for them.
+    {
+        const bool pad = GamepadNav::Connected();
+        ImGui::SameLine();
+        ImGui::TextDisabled("   Pad: Start = this menu   D-pad = move   A = select   B = back   LB/RB = adjust");
+        if (pad)
+        {
+            const uint16_t b = GamepadNav::Buttons();
+            char held[128];
+            snprintf(held, sizeof(held), "pad seen   buttons %04X   stick %d,%d   triggers %u",
+                     b, GamepadNav::ThumbLX(), GamepadNav::ThumbLY(), GamepadNav::Triggers());
+            ImGui::TextDisabled("%s", held);
+        }
+        else
+        {
+            ImGui::TextDisabled("no pad seen on XInput device 0 - if the pad works in the game but not here, this is the line to read");
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false)) { Overlay::Toggle(); return; }
+        if (open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) { open = false; }
+    }
         }
         ImGui::End();
         (void)changed;
@@ -759,6 +784,10 @@ void Overlay::Toggle()
     g_open.store(!g_open.load());
     g_capturing = -1;
     g_editLoaded = false;
+    // Forget the pad's last known state. A button that was down when the menu
+    // opened would otherwise arrive as a fresh press and be interpreted as a
+    // click on whatever happened to be selected.
+    GamepadNav::Reset();
 }
 
 void Overlay::ToggleConsole()
@@ -793,6 +822,11 @@ bool Overlay::HandleMessage(void* hwnd, uint32_t message, uint64_t wParam, int64
     }
     // The character that key makes must not land in the console's input.
     if (message == WM_CHAR && ((lParam >> 16) & 0xFF) == 0x29 && g_console.load()) return true;
+    // The backend decides whether a pad exists at init and on WM_DEVICECHANGE.
+    // Handing it the device change unconditionally is what makes a pad plugged
+    // in after launch visible at all; the backend ignores what it does not
+    // care about, and the cost is one ignored message.
+    if (g_ready.load()) ImGui_ImplWin32_WndProcHandler(static_cast<HWND>(hwnd), message, WPARAM(wParam), LPARAM(lParam));
     if (!g_ready.load() || (!g_open.load() && !g_console.load())) return false;
     // A binding waiting for a key takes the next key or mouse button.
     if (g_capturing >= 0)
@@ -877,11 +911,15 @@ void Overlay::Render(ID3D11RenderTargetView* back, ID3D11Texture2D* backTexture,
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    // Announce the pad BEFORE NewFrame.
+    //
+    // ImGui reads ImGuiBackendFlags_HasGamepad inside NewFrame, and every
+    // gamepad navigation test is gated on it - so anything done afterwards is
+    // a frame late at best. The comment that used to sit here claimed the
+    // opposite ("after NewFrame so it counts for this frame") and was simply
+    // wrong about how ImGui processes input events.
+    GamepadNav::AnnouncePad();
     ImGui::NewFrame();
-    // The pad, as navigation keys. After NewFrame so it counts for this
-    // frame, and before anything is drawn so the selection has moved by the
-    // time the panels are built.
-    GamepadNav::Feed();
     if (values.fpsOverlay || values.statsOverlay)
     {
         ImGui::SetNextWindowPos(ImVec2(8, 8));
