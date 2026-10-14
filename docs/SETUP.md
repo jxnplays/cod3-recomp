@@ -243,7 +243,15 @@ Substitute your own Visual Studio path. This whole line runs in one
 `cmd` because `vcvars64.bat` sets the compiler environment in its own
 shell.
 
-You should end up with `build\CoD3Host\CoD3.exe`, about 209 MB.
+You should end up with `build\CoD3Host\CoD3.exe`, about 209 MB, and beside it a
+`buttons\` folder holding 38 PNGs. The build copies those in from
+`assets\buttons\` for you — they are the controller button icons the settings
+menu draws. If the folder is missing the menu says **"No icons found"** and
+falls back to text rather than drawing nothing, so a missing folder is
+visible rather than silent.
+
+The FFmpeg DLLs need to be beside the executable too; audio does not work
+without them. `thirdparty/ffmpeg/README.md` says where they come from.
 
 > **On `--parallel 4`.** The default in `recompile.ps1` is your core
 > count, and that will run a 32 GB machine out of memory — Clang holds
@@ -285,7 +293,7 @@ cd build\CoD3Host
 
 | Key | |
 |---|---|
-| `F11` | settings menu |
+| `F11` | settings, and the mod menu — both work with a controller |
 | `F12` | screenshot |
 | `` ` `` | the title's console |
 | `Escape` | pause |
@@ -307,6 +315,26 @@ root cause in Xenia's four-argument `make_full_test_constant` macro and
 the `clrldi r3,r3,32` inside it. `verify.ps1` prints the first 40 failing
 lines and then stops listing, so the count of lines you see is not the
 count of failures. See `docs/GAPS.md`.
+
+### Check the levels
+
+```powershell
+.\scripts\probe_level.ps1 saint_lo     # one level
+.\scripts\probe_level.ps1 -All         # all fifteen, about 19 minutes
+```
+
+Each is launched on its own and the log is read back for what it drew.
+`ok` means it streamed its archives and drew a world; anything else says
+which way it failed. `credits` is the end-of-game reel rather than a
+playable level — 0.7 MB of `.cod` against 17–30 MB for a real one — so it
+is judged on streaming rather than draw count, because a test that reports
+working code as broken is worse than no test.
+
+The probe prints free memory beside each reading. Another build on the same
+machine drags the frame rate down for reasons that have nothing to do with
+this project, and without that number a low reading reads as a fault here.
+
+All fifteen currently come up. The table is in `docs/GAPS.md`.
 
 ---
 
@@ -332,6 +360,9 @@ $env:COD3_NOFILMS="1"           # skip the intro films
 | `COD3_SCANMEM=text` | report where a string sits in guest memory |
 | `COD3_DUMP=addr:bytes` | dump guest memory at an address |
 | `COD3_MOUSELOG=1` | log what mouse look took |
+| `COD3_ICONLOG=1` | say which stage a button icon failed to load at |
+| `COD3_SKIPLOG=1` | log frames where the renderer dropped a draw, and why |
+| `COD3_PICTURES=<second>` | dump the frames after that second in full |
 
 All 15 level names, from `build\CoD3Host\cod3_levels.inc`:
 

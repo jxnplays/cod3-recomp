@@ -49,6 +49,7 @@ Start here, in the order you probably want them:
 | [docs/MOUSE.md](docs/MOUSE.md) | Mouse look: the measurements, and the leads already exhausted |
 | [docs/cvars.txt](docs/cvars.txt) | The console variables, as a plain list |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Earlier analysis |
+| [assets/buttons/README.md](assets/buttons/README.md) | Controller button icons: the sets, the licence, how to add one |
 | [docs/renderer.md](docs/renderer.md) | How the Direct3D 11 renderer works |
 | [docs/animation.md](docs/animation.md) | Animation |
 | [docs/scripts.md](docs/scripts.md) | What each script in `scripts/` does |
@@ -96,8 +97,9 @@ and [Known gaps](#known-gaps) and [STATUS.md](STATUS.md) are the honest sources.
 | **Rendering** | Direct3D 11, the title's own shaders via HLSL |
 | **Assets** | Streams level archives from the game directory |
 | **Audio** | XMA decoded through FFmpeg |
-| **Input** | Keyboard, mouse and pad |
+| **Input** | Keyboard, mouse and pad, with controller navigation in the menus |
 | **Settings** | Resolution, filtering, anisotropy, AA, FOV, FPS cap |
+| **Mods** | 41 of the title's own console variables, from `F11` |
 
 ### What we have verified ourselves
 
@@ -299,10 +301,32 @@ CoD3.exe --help
 
 | Key | |
 |---|---|
-| `F11` | settings menu |
+| `F11` | settings, and the mod menu — both work with a controller |
 | `F12` | screenshot, plus the next two frames' draws to `CoD3.log` |
 | `` ` `` | the title's own console (`spmap forest`, `god`, `noclip`) |
 | `Escape` | pause |
+
+### The menus
+
+`F11` opens the settings panel: **Graphics**, **Controls**, and **Mods**.
+
+The **Mods** tab is 41 of the title's own console variables — crosshair, weapon
+model, HUD brightness, compass, objectives, fog, fullbright, clipping planes,
+texture filtering, and the `r_show*` debug set. Each takes effect the moment
+you change it. `docs/cvars.txt` has the full list and `docs/CONSOLE.md`
+explains the mechanism.
+
+What is deliberately **not** in it: god mode, noclip, infinite ammo, give
+weapon, spawnable bots. The title's cvar table holds 188 names and none of
+them sets health, ammo, money, position or a peer player — those need a
+different way into the game, and a menu row that quietly does nothing is
+worse than no row.
+
+**Controls** drives the whole panel with a controller as well as a mouse:
+D-pad or left stick to move, A to activate, bumpers to switch tabs. Which set
+of button icons to draw is chosen there too, and it changes immediately —
+Xbox, PlayStation by default, or letters only with no images at all. Every
+keybind also shows the pad button that does the same thing.
 
 ---
 
