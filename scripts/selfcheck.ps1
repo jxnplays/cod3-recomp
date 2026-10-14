@@ -440,9 +440,26 @@ if ($script:Failures -eq 0) {
     # thirty commits. So a green run writes the evidence itself - how many
     # checks, when, and with the tree's commit - and the commit message is
     # expected to quote it rather than assert it.
-    $stamp = Join-Path $Root '.git\SELFCHECK'
-    $head = (& git -C $Root rev-parse --short HEAD 2>$null)
-    if (-not $head) { $head = 'uncommitted' }
+    # A linked worktree's .git is a FILE, not a directory, and writing under it
+    # fails there. Also, git writes "not a git repository" to stderr, which
+    # under $ErrorActionPreference='Stop' throws - and would take the run down
+    # after the verdict was already known good. Found by running this from a
+    # copy with no .git at all, which is what CI will be.
+    $gitDir = Join-Path $Root '.git'
+    if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) {
+        Write-Host '  not a git checkout, so no verdict file was written' -ForegroundColor DarkGray
+        exit 0
+    }
+
+    $stamp = Join-Path $gitDir 'SELFCHECK'
+    $savedEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $head = (& git -C $Root rev-parse --short HEAD 2> $null)
+        if ($LASTEXITCODE -ne 0 -or -not $head) { $head = 'uncommitted' }
+    } finally {
+        $ErrorActionPreference = $savedEap
+    }
     @(
         "MEASURED: $head"
         "  checks:  $script:Checks, all passed"
@@ -453,7 +470,11 @@ if ($script:Failures -eq 0) {
     exit 0
 }
 Write-Host "$($script:Checks) checks, $($script:Failures) failed." -ForegroundColor Red
-if (Test-Path -LiteralPath (Join-Path $Root '.git\SELFCHECK')) {
-    Remove-Item -LiteralPath (Join-Path $Root '.git\SELFCHECK') -Force -ErrorAction SilentlyContinue
+$gitDirFail = Join-Path $Root '.git'
+if (Test-Path -LiteralPath $gitDirFail -PathType Container) {
+    $stale = Join-Path $gitDirFail 'SELFCHECK'
+    if (Test-Path -LiteralPath $stale) {
+        Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+    }
 }
 exit 1

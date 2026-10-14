@@ -208,3 +208,37 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "XenosDis failed to build (exit $LASTEXITCODE)" }
           if (-not (Test-Path 'build-xenosdis/XenosDis.exe')) { throw 'XenosDis.exe was not produced' }
           Write-Host 'XenosDis built'
+
+  # The checks that guard this repository's logic, on every push.
+  #
+  # These are the checks that would have caught the four bugs shipped this week
+  # as "verified": the .xex suffix test that compared 11 characters against a
+  # 4-character string, the sensitivity curve that changed every setting below
+  # the top it was meant to affect, the field list that silently dropped nine
+  # settings, and XGetVideoMode left behind while the other two mode reporters
+  # were merged. None of them stopped the build; all were found by a person or
+  # by review. This is what makes the script the thing that catches them.
+  #
+  # -SkipBuild because the build cannot run here: CoD3Host needs the generated
+  # headers under CoD3RecompLib/ppc, which are XenonRecomp's output and need the
+  # player's own default.xex. Verified by copying the tree without build/ or
+  # .git/ and running it - which is also the shape of this job, and which found
+  # two bugs in the script itself on the way.
+  selfcheck:
+    name: Self-check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Pin LLVM
+        shell: pwsh
+        run: |
+          choco install llvm --version=20.1.8 -y --no-progress
+          if (-not (Test-Path 'C:\Program Files\LLVM\bin\clang-cl.exe')) { throw "clang-cl not found after install" }
+          clang-cl --version
+
+      - name: Run the self-check
+        shell: pwsh
+        run: |
+          .\scripts\selfcheck.ps1 -SkipBuild
+          if ($LASTEXITCODE -ne 0) { throw "selfcheck failed (exit $LASTEXITCODE)" }
