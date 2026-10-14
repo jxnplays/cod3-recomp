@@ -1,9 +1,26 @@
 # Memory limits
 
 The rule from 2026-10-13: **this session is capped at 15 GB, and the machine
-is not allowed past 90% RAM.** This is enforced by
+is not allowed past 90% RAM.** This is supposed to be enforced by
 [`scripts/limited.ps1`](../scripts/limited.ps1), not by remembering to be
 careful.
+
+**It was not, for the whole of 2026-10-14.** `limited.ps1 -NoWait` printed
+"watching 4096 MB free / 90% used" and then returned, before reaching the
+polling loop - so no watchdog ran and the ceiling was never applied. Every
+build and every capture run that day used `-NoWait`. Peak that day was about
+19 GB, over the cap, because the guard that was supposed to stop it was not
+running.
+
+There is no 15 GB trigger in the script at all. The two thresholds it has are
+`-RefuseFreeMB` (4096) and `-RefusePct` (90), which is the rule as the user
+stated it; the 15 GB figure was never turned into one.
+
+`-NoWait` now starts a real watchdog and then checks that it is still alive
+before reporting it, because under this repository's nested job object a
+child can be torn down with its parent. When it cannot survive, it says so
+and says that nothing is watching. **Run without `-NoWait` when the ceiling
+actually matters.**
 
 ```powershell
 # a build

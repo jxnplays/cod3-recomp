@@ -3,7 +3,10 @@
     Runs a command with an enforced memory ceiling, by watching and acting.
 
 .DESCRIPTION
-    The 15 GB ceiling asked for on 2026-10-13.
+    The memory ceiling asked for on 2026-10-13, which is the machine rule as
+    stated: do not pass 90% RAM, and keep 4 GB free. There is no 15 GB trigger
+    in this file, and three documents claimed there was until 2026-10-14 -
+    including this one, two lines down, which said so in its own header.
 
     This started life as a Windows job object with JOB_OBJECT_LIMIT_JOB_MEMORY,
     which is the right tool. It does not work in this environment and the
@@ -63,6 +66,13 @@
 #>
 [CmdletBinding(DefaultParameterSetName = 'Cmd')]
 param(
+    # Watch a process that is already running, instead of starting one. This is
+    # how -NoWait gets a watchdog that survives the caller: the detached child
+    # has its own console and this one has to let go of it, so the watcher is a
+    # separate copy of this script pointed at the pid rather than the command.
+    [Parameter(ParameterSetName = 'Watch', Mandatory = $true)]
+    [int]$WatchPid,
+
     [Parameter(ParameterSetName = 'Cmd', Mandatory = $true, Position = 0)]
     [string]$Cmd,
 
@@ -145,7 +155,13 @@ $psi.UseShellExecute = $false
 if ($WorkDir) { $psi.WorkingDirectory = $WorkDir }
 else { $psi.WorkingDirectory = (Get-Location).Path }
 
-$proc = [System.Diagnostics.Process]::Start($psi)
+if ($PSCmdlet.ParameterSetName -eq 'Watch') {
+    # Adopt an already-running process and go straight to the polling loop.
+    $proc = [System.Diagnostics.Process]::GetProcessById($WatchPid)
+}
+else {
+    $proc = [System.Diagnostics.Process]::Start($psi)
+}
 if ($proc -eq $null) { throw "failed to start" }
 
 Write-Host ("pid {0}, watching; stops at {1} MB free or {2}% used." -f `
@@ -178,7 +194,51 @@ if ($NoWait) {
                 $proc.Id)
     Write-Host ("pid {0} started with its own console, so CoD3.log is written." -f `
                 $detached.Id)
-    Write-Host ("watching {0} MB free / {1}%% used." -f $RefuseFreeMB, $RefusePct)
+    # The watchdog, detached, BEFORE returning.
+    #
+    # This used to just say "watching ..." and exit. The polling loop is below
+    # this point, so it never ran, and nothing was watching anything - while
+    # docs/MEMORY.md, docs/RESUME.md and this script's own help all described a
+    # ceiling that was silently not being enforced. Every build and capture
+    # overnight was run this way.
+    #
+    # Re-launching this script on itself, attached to nothing, is the only way
+    # to get a watcher that outlives the caller without a job object (which
+    # silently fails under a nested job, the reason this file exists).
+    # The script path is quoted explicitly. Start-Process does NOT quote
+    # ArgumentList entries for you, so a repository path containing a space -
+    # which this one does - arrives as two arguments and the watcher dies with
+    # "Processing -File 'X:\AI\Recomp' failed". That is the same quoting trap
+    # this file's own header warns about, reached from the other direction.
+    $watchArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath),
+                   '-WatchPid', $detached.Id, '-RefuseFreeMB', $RefuseFreeMB,
+                   '-RefusePct', $RefusePct, '-PollSeconds', $PollSeconds)
+    $watcher = Start-Process -FilePath 'powershell.exe' -ArgumentList $watchArgs -WindowStyle Hidden -PassThru
+
+    Write-Host ("pid {0} watching; the watchdog is pid {1}, and stops the tree at {2} MB free or {3}% used." -f `
+                $detached.Id, $watcher.Id, $RefuseFreeMB, $RefusePct)
+
+    # And then check that it is actually there.
+    #
+    # This used to say "watching ..." and exit, with no watchdog at all - the
+    # polling loop is below this point and never ran. Three documents and this
+    # file's own help described a ceiling that was silently not being enforced.
+    #
+    # It is also worth knowing whether the watcher survived the hand-off. Under
+    # a nested job object - the harness this repository is developed in -
+    # a child can be torn down with its parent, and a watchdog that dies with
+    # the shell that started it is worse than none, because it was reported as
+    # running. So: look, and say plainly if it is not there.
+    Start-Sleep -Milliseconds 700
+    $alive = Get-Process -Id $watcher.Id -ErrorAction SilentlyContinue
+    if ($alive) {
+        Write-Host ("the watchdog is running (pid {0}). To stop it: Stop-Process -Id {0}" -f $watcher.Id)
+    } else {
+        Write-Warning ("the watchdog did not survive the hand-off (pid {0} is gone). This shell" -f $watcher.Id)
+        Write-Warning ("environment tears down child processes with their parent, so NOTHING is")
+        Write-Warning ("watching this run and the memory ceiling is NOT being enforced. Run this")
+        Write-Warning ("command WITHOUT -NoWait to get a real watchdog, or watch the log yourself.")
+    }
     exit 0
 }
 
