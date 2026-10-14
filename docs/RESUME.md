@@ -136,30 +136,60 @@ No button-layout query. The dashboard's store is not the source.
 hits in the recompiled code. These are data tables read by pointer. Control
 test already performed — do not repeat it.
 
-### The live lead: the `ps2` cvar
+### Button prompts: `ps2` is NOT the switch (tested 2026-10-14)
 
-`ps2` is a genuine entry in the title's own cvar name table — sorted between
-`ProfileWriteData` and `r_clear` in `docs/cvars.txt`, 198 names. This is the
-shape of the switch that picks PS2-era prompts over Xbox-era ones.
+**The picker works. The variable does not.** A human tested it: setting
+PlayStation and restarting changed nothing on screen. `ps2` is a real cvar
+and the command reaches the title, but it is the wrong lever.
 
-- `set ps2 1` **reached the command buffer**: `video: "set ps2 1" put on the
-  title's command buffer`
-- A memory scan for `ps2` hit the unrelated `.ps2tex` / `.ps2lm` / `.ps2font`
-  file-extension table first and stopped at its 20-result limit, so the cvar
-  entry itself was never shown. Not evidence against it.
+What the disc actually contains, from a full sweep of all 481 `.cod`/`.wbk`
+files (5.1 GB):
 
-**Never confirmed visually.** Every attempt to screenshot the effect was cut
-short by the reboots. The open question is whether it must be set *before*
-the font/UI loads — at t=90s the UI is long since up, and if the glyph set is
-chosen once at font init, a live `set` would do nothing and look like a
-failure of the cvar.
+- **Exactly one button glyph font exists**: `i_button_icons_xe_en.xefont`,
+  with its texture. There is no PS2, PS3 or any other button-icon font
+  anywhere. The only other `.xefont` files on the disc are garamond,
+  helvetica_bold and helvetica_bold_italic.
+- The `.ps2tex` / `.ps2font` / `.ps2lm` strings are the shared engine's
+  vocabulary for *other platforms' builds*, not assets present here.
+- `ps2` sits among unremoved PS2 boilerplate in the same cvar table:
+  `DUALSHOCK.2` prompts, `us.playstation.com/DNAS`, `MEMORY CARD slot 1`,
+  `OPTIONS_PLAYSTATION_DESCRIPTION`. It is very likely one more of those,
+  alongside leaked junk like `blah`, `CVS` and `FEME`.
+- The four `xenon_*.cfg` layouts are `bind`/`unbind` only. No font, glyph or
+  platform reference in any of them.
 
-**How to settle it on the first clean run:** set it as early as possible
-rather than at t=90s. The title execs `d:\config\xenon_a.cfg` and
-`d:\config\ts_def.cfg` at startup, so putting `set ps2 1` into the game's own
-config is the reliable way to have it set before the UI loads. That mutates
-the installed game folder, so ask first and keep it to one line that is easy
-to revert.
+**The mechanism is now known.** The title's own prompt vocabulary is
+PlayStation-era - literal control tokens like `Press ~cross`, `Press ~circle`,
+`Press ~square`, `Press ~triangle`, `Press ~l1`, and semantic ones like
+`Press and hold [USE] to pickup the %s ammo`. The 360 build reuses those names
+and maps each to an Xbox glyph at draw time. So `~square` is *already* "the
+square button" internally; it renders as a blue Y on 360 and a magenta square
+on PS2. **The artwork is a lookup from key-name to a cell in that one font**,
+not a second string table.
+
+Three routes, best first:
+
+1. **The unlisted dvar table.** `[USE]`, `[AIM]`, `[HOLD_USE]`,
+   `BATTLE_ACTION_BUTTON` are almost certainly dvar names holding display
+   text. If they are in the 210 dvars at `0x82061400`, `setdvar USE "Press
+   ~square"` changes the prompts by pure data, with no artwork involved.
+   **Cheapest and completely unexplored.** Do this first.
+2. **The key-name to glyph map** in the `.xex`. Decisive test, no code
+   needed: the configs already bind PS names, so put `bind SQUARE "+stance"`
+   and `bind CIRCLE "+activatereload"` into `config/default.cfg`. If the
+   drawn glyph follows the *bind* the map is per-key-name and manipulable; if
+   it stays put the map is per-action and baked in.
+3. **Font substitution.** Both assets are name-addressable through
+   `CoD3Host/kernel_file.cpp`, so an open can be redirected. Whether the
+   existing sheet already contains magenta squares in unused cells is
+   unknown - the `.wbk` codec is proprietary and unimplemented, so the sheet
+   was never decoded. Dumping it from guest memory would answer that.
+
+**What the reference screenshot implies.** It shows the title rendering a
+PlayStation square, which proves the *font* can do it - not that a variable
+switches it. The other user may well have replaced the font asset. That is
+not a dead end: the work is localised to one `.xetex`, one `.xefont`, one
+name table and one glyph map.
 
 ---
 

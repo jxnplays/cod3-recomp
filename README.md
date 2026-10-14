@@ -49,7 +49,6 @@ Start here, in the order you probably want them:
 | [docs/MOUSE.md](docs/MOUSE.md) | Mouse look: the measurements, and the leads already exhausted |
 | [docs/cvars.txt](docs/cvars.txt) | The console variables, as a plain list |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Earlier analysis |
-| [assets/buttons/README.md](assets/buttons/README.md) | Controller button icons: the sets, the licence, how to add one |
 | [docs/renderer.md](docs/renderer.md) | How the Direct3D 11 renderer works |
 | [docs/animation.md](docs/animation.md) | Animation |
 | [docs/scripts.md](docs/scripts.md) | What each script in `scripts/` does |

@@ -247,8 +247,7 @@ You should end up with `build\CoD3Host\CoD3.exe`, about 209 MB.
 
 There is no button artwork beside it, and there is no `buttons\` folder. The
 in-game button prompts are the title's own - Activision drew them into COD3's
-font data - and they are switched with the `ps2` variable rather than replaced
-with images. The settings menu offers that, and the four control layouts the
+font data - and they are not replaced with images. The settings menu offers that, and the four control layouts the
 title ships, as **Control layout** and **Button prompts**.
 
 The FFmpeg DLLs need to be beside the executable too; audio does not work
@@ -311,7 +310,7 @@ everything is opt-in from the console default.
 | Anti-aliasing | None, FXAA, MSAA 2x/4x/8x, MSAA 4x + FXAA | |
 | Mouse sensitivity | 0.1 - 10 | On a square-root curve, so 1.0 feels exactly as it did before and the top of the range does not clip. |
 | Control layout | Default, Lefty, SCI-FI / Tactical, Legacy | The title's own configs. Which physical button does what. |
-| Button prompts | Xbox, PlayStation | The title's `ps2` variable. Which symbols it draws on screen. |
+| Button prompts | Xbox, PlayStation | **Does not work yet.** Sends `ps2`, which is not the switch. See `docs/RESUME.md`. |
 
 `COD3_XEX` chooses which title boots (`default.xex`, or `codmp_xenonf.xex`
 for multiplayer). Multiplayer does not run yet: its `.data` section

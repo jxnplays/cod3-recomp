@@ -413,11 +413,25 @@ namespace
                     ImGui::SameLine();
                     ImGui::TextDisabled("(applied at the next front end load too)");
 
-                    // Button prompts: the title's own ps2 cvar. Not the same
-                    // thing as the layout above - the layout says which
-                    // physical button does what, this says which symbols the
-                    // title draws on screen. The title ships both sets in its
-                    // font data.
+                    // Button prompts. Not the same thing as the layout above - the layout says
+                    // which physical button does what, this says which symbols
+                    // the title draws on screen.
+                    //
+                    // IT DOES NOT WORK, and the label says so. ps2 is a real
+                    // cvar and the command reaches the title, but a human
+                    // tested it and the prompts did not change. A full sweep
+                    // of the disc found one button glyph font and no
+                    // PlayStation counterpart; the title's own prompt strings
+                    // are PlayStation-named already ("Press ~cross",
+                    // "Press ~square") and the 360 build maps each name onto
+                    // an Xbox glyph at draw time. ps2 sits among unremoved
+                    // PS2 boilerplate in the same cvar table and is very
+                    // likely more of it.
+                    //
+                    // Kept, wired and sent because it is the only platform-
+                    // shaped name in the table and costs nothing - but the
+                    // three routes that would actually work are written up in
+                    // docs/RESUME.md.
                     ImGui::TextUnformatted("Button prompts");
                     ImGui::SameLine();
                     static const char* const kPromptNames[] = { "Xbox", "PlayStation" };
@@ -445,7 +459,7 @@ namespace
                         ImGui::EndCombo();
                     }
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(ps2; sent again at every startup)");
+                    ImGui::TextDisabled("(sends ps2 - tested, and it is not the switch)");
 
                     ImGui::Separator();
                     ImGui::TextUnformatted("Keys");

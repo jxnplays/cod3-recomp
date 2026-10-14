@@ -12,8 +12,12 @@ author of:
 
     https://github.com/FrankHUN88453/CoD3Recomp
 
-and are redistributed here under the BSD 3-Clause licence. Their notice is
-retained below in full, as that licence requires. See docs/PROVENANCE.md.
+and are redistributed here **with the author's permission**, which is what
+makes the redistribution here possible. See CONTRIBUTING.md.
+
+There is no licence file in that project and none is claimed on its behalf:
+what is reproduced below is the BSD 3-Clause text as the basis on which the
+runtime was inherited, not a notice retrieved from the upstream repository.
 
 Copyright (c) the authors of CoD3Recomp
 All rights reserved.
