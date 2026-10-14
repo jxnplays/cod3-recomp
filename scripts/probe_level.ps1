@@ -55,6 +55,7 @@ $levels = @(Select-String -Path (Join-Path $Run 'cod3_levels.inc') -Pattern 'COD
 if ($levels.Count -eq 0) { throw 'no level list; is the build configured?' }
 
 $Targets = if ($All) { $levels } elseif ($Level -ne '') { @($Level) } else { throw 'name a level, or -All' }
+$failed = 0
 
 foreach ($name in $Targets) {
     if ($levels -notcontains $name) { Write-Host "skipping $name : not one of the fifteen" -ForegroundColor Yellow; continue }
@@ -135,9 +136,20 @@ foreach ($name in $Targets) {
     Write-Host ("{0,-9} {1,-18} fps {2,4}  files {3,4}  draws/frame {4,6}  tri {5,7}k  streamed {6}  free {7}GB" -f `
         $name, $verdict, $fps, $files, $rDraws, $rTris, $streamed, $freeGB) -ForegroundColor $colour
 
+    if ($verdict -ne 'ok') { $failed++ }
     Get-Process -Id $proc.Id -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 1
 }
 
 Write-Host ''
 Write-Host 'done. ok means the level drew a world; anything else says which way it failed.' -ForegroundColor Cyan
+
+# A sweep that failed every level and still exits 0 is worse than no sweep: any
+# wrapper reading $LASTEXITCODE - CI included - is told it passed. Counted here
+# rather than at the print, so it covers the levels that were skipped too.
+if ($failed -gt 0) {
+    Write-Host ''
+    Write-Host "$failed of $($Targets.Count) level(s) did not come up." -ForegroundColor Red
+    exit 1
+}
+exit 0

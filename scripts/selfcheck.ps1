@@ -241,6 +241,30 @@ int main() {
         }
     }
 
+    # The render key table, across the rehash that Erase used to walk into.
+    $tblCpp = Join-Path $Root 'scripts\table_test.cpp'
+    $tblExe = Join-Path $tmp 'table_test.exe'
+    if (-not (Test-Path -LiteralPath $tblCpp)) {
+        Fail 'the key table could not be run' "the test file is missing: $tblCpp"
+    } else {
+        $tDiags = Join-Path $tmp 'table_compile.txt'
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $clang /nologo /std:c++17 "/Fe:$tblExe" "/I$Src" $tblCpp /link /nologo 2> $tDiags 1> $null
+        } finally {
+            $ErrorActionPreference = $previous
+        }
+        if (-not (Test-Path -LiteralPath $tblExe)) {
+            $why = if (Test-Path -LiteralPath $tDiags) { ((Get-Content $tDiags -Raw).Trim() -split "`n" | Select-Object -First 2) -join ' ' } else { 'no compiler output' }
+            Fail 'the key table could not be run' ("it did not compile, so the check was SKIPPED, not passed: $why")
+        } else {
+            $tblOut = & $tblExe 2>&1
+            if ($LASTEXITCODE -eq 0) { Pass 'the key table survives erasing across a rehash, and being emptied' }
+            else { Fail 'the key table corrupts itself when erased near full' ($tblOut -join '; ') }
+        }
+    }
+
     # The sharpening kernel, run on the CPU.
     #
     # It shipped once and did nothing: it clamped the result to [mn, mx], and

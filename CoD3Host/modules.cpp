@@ -102,12 +102,25 @@ namespace
 
 bool Modules::Contains(uint32_t address)
 {
+    // Taken for the read.
+    //
+    // Load and Unload delete g_loaded under this mutex, and the two call
+    // sites that unlock before resolving an entry were unlocked precisely so
+    // the guest call could re-enter. That left a window in which another
+    // thread could unload and free the Module while this was still reading
+    // module->table - a use-after-free reached from two guest threads.
+    //
+    // The lock is only held for the lookup, never across the guest call, so
+    // re-entry is still possible and this costs nothing in the common case.
+    std::lock_guard<std::mutex> lock(g_mutex);
     const Module* module = g_loaded;
-    return module != nullptr && address >= module->base && address < module->base + module->size;
+    if (module == nullptr || address < module->base || address >= module->base + module->size) return false;
+    return module->table[(address - module->base) / 4] != nullptr;
 }
 
 PPCFunc* Modules::Lookup(uint32_t address)
 {
+    std::lock_guard<std::mutex> lock(g_mutex);
     const Module* module = g_loaded;
     if (module == nullptr || address < module->base || address >= module->base + module->size)
         return nullptr;
@@ -116,6 +129,8 @@ PPCFunc* Modules::Lookup(uint32_t address)
 
 const char* Modules::LoadedName()
 {
+    // Same reason as Lookup: this reads a pointer another thread can delete.
+    std::lock_guard<std::mutex> lock(g_mutex);
     const Module* module = g_loaded;
     return module != nullptr ? module->name.c_str() : "";
 }

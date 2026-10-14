@@ -46,6 +46,24 @@ namespace RenderTable
 
         // Takes the key out, if it is in: the slot is tombstoned by
         // rebuilding the run after it, which keeps Find's early exit true.
+        //
+        // The run is collected into a local vector FIRST, cleared, then
+        // reinserted. It used to be walked in place, reinserting as it went,
+        // advancing `next` with a mask captured on entry - which is wrong if
+        // Insert calls Grow() and reallocates at a new size.
+        //
+        // That cannot actually happen, and it is worth being precise about
+        // why rather than leaving the impression it did. Erase decrements
+        // m_used before each reinsert, so every Insert in the walk evaluates
+        // the same guard value, one below where the table sat when the erase
+        // began. A table can never already be over the threshold, because the
+        // Insert that would push it over grows it first. So Grow never fires
+        // here, and the old code was correct.
+        //
+        // What was wrong with it was relying on that: an invisible invariant,
+        // load-bearing, one line away from breaking. Collecting the run first
+        // removes the dependency, at the cost of a small vector on an erase
+        // that is not on any hot path the sweeps care about.
         void Erase(const uint32_t* key)
         {
             const size_t mask = m_slots.size() - 1;
@@ -58,15 +76,16 @@ namespace RenderTable
             }
             m_slots[slot].handle = 0;
             m_used--;
-            // Reinsert what follows in the run, so nothing is cut off.
-            size_t next = (slot + 1) & mask;
-            while (m_slots[next].handle != 0)
+
+            std::vector<Slot> run;
+            for (size_t next = (slot + 1) & mask; m_slots[next].handle != 0; next = (next + 1) & mask)
+                run.push_back(m_slots[next]);
+            for (size_t next = (slot + 1) & mask, i = 0; i < run.size(); next = (next + 1) & mask)
             {
-                const Slot moved = m_slots[next];
                 m_slots[next].handle = 0;
                 m_used--;
-                Insert(moved.key, moved.handle);
-                next = (next + 1) & mask;
+                Insert(run[i].key, run[i].handle);
+                i++;
             }
         }
 

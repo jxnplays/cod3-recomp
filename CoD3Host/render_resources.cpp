@@ -834,8 +834,16 @@ bool RenderResources::BeginFrame(uint64_t frame)
 
 bool RenderResources::Forget(uint32_t address, uint32_t size)
 {
-    const uint32_t first = address & 0x1FFFFFFFu, end = first + size;
-    auto inside = [&](uint32_t at) { return at >= first && at < end; };
+    const uint32_t first = address & 0x1FFFFFFFu;
+    // Compared as a distance, not as an end address.
+    //
+    // `first + size` wraps for a range at the top of the 512 MB window: `end`
+    // comes out BELOW `first`, `at < end` is never true, and nothing is ever
+    // forgotten - so every texture and buffer over a freed guest range stays
+    // alive pointing at memory the guest has released. That is the exact class
+    // of bug this function exists to prevent, reached by writing the obvious
+    // thing.
+    auto inside = [&](uint32_t at) { return at >= first && uint64_t(at) - first < size; };
     bool dropped = false;
     for (uint32_t i = 0; i < g_textures.size(); i++)
     {

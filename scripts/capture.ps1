@@ -75,10 +75,17 @@ if (Test-Path $log) {
     Write-Host "  guest faults: $($faults.Count)"
 }
 
-if (-not (Test-Path $shots)) { Write-Host "no screenshots directory was made" -ForegroundColor Yellow; return }
+# These exit non-zero rather than returning quietly.
+#
+# A caller checking $LASTEXITCODE used to get 0 after a run that measured
+# nothing at all - no directory, or no pictures in it. That is the worst kind
+# of wrong answer this repository has: a check that reports success because it
+# did not run. Any wrapper around a sweep, including CI, would have read it as
+# a pass.
+if (-not (Test-Path $shots)) { Write-Host "no screenshots directory was made" -ForegroundColor Red; exit 1 }
 
 $files = @(Get-ChildItem $shots -Filter *.png | Sort-Object Name)
-if ($files.Count -eq 0) { Write-Host "no pictures were written" -ForegroundColor Yellow; return }
+if ($files.Count -eq 0) { Write-Host "no pictures were written" -ForegroundColor Red; exit 1 }
 
 Add-Type -AssemblyName System.Drawing
 foreach ($f in $files) {
@@ -104,3 +111,26 @@ foreach ($f in $files) {
     } finally { $bmp.Dispose() }
 }
 Write-Host "pictures in $shots"
+
+# And a picture that is one flat colour is a broken present path, not a result.
+$flat = 0
+foreach ($f in $files) {
+    $bmp = [System.Drawing.Bitmap]::FromFile($f.FullName)
+    try {
+        $first = $bmp.GetPixel(0, 0)
+        $same = $true
+        for ($y = 0; $y -lt $bmp.Height - 32; $y += 32) {
+            for ($x = 0; $x -lt $bmp.Width - 32; $x += 32) {
+                $c = $bmp.GetPixel($x, $y)
+                if ($c.R -ne $first.R -or $c.G -ne $first.G -or $c.B -ne $first.B) { $same = $false; break }
+            }
+            if (-not $same) { break }
+        }
+        if ($same) { $flat++ }
+    } finally { $bmp.Dispose() }
+}
+if ($flat -eq $files.Count) {
+    Write-Host "every picture is a single flat colour - the present path produced nothing" -ForegroundColor Red
+    exit 1
+}
+exit 0
