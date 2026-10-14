@@ -315,7 +315,7 @@ namespace
                 }
                 if (ImGui::BeginTabItem("Controls"))
                 {
-                    ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity, 0.1f, 3.0f, "%.2f");
+                    ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity, 0.1f, 10.0f, "%.2f");
                     ImGui::TextDisabled("Both axes alike.");
                     ImGui::Checkbox("Raw mouse input", &g_edit.rawMouse);
                     ImGui::SameLine();

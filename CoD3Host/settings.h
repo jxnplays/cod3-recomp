@@ -53,7 +53,7 @@ namespace Settings
 // but it is clamped on load like everything else - an ini edited by hand can
 // say anything at all, and an out-of-range index would read past the table.
 int controlLayout = 0;
-        float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 3
+        float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 10
         bool rawMouse = true;            // the mouse's own counts, not the pointer's travel
         int keys[ActionCount] = {};
     };

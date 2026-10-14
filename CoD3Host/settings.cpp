@@ -180,7 +180,11 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     if (v.fov < 65 || v.fov > 100) v.fov = 65;
     if (v.modelDetail < 0 || v.modelDetail > 1) v.modelDetail = 1;
     if (v.windowMode < 0 || v.windowMode > 1) v.windowMode = 0;
-    if (!(v.mouseSensitivity >= 0.1f && v.mouseSensitivity <= 3.0f)) v.mouseSensitivity = 1.0f;
+    // Up to 10, matching the slider. It used to stop at 3, which is low for raw
+    // mouse: at 3 the gain already saturates the stick's range within about
+    // eight pixels of movement, so there was no room left between "too slow"
+    // and "clipped".
+    if (!(v.mouseSensitivity >= 0.1f && v.mouseSensitivity <= 10.0f)) v.mouseSensitivity = 1.0f;
     // Four layouts, 0 to 3. The ini is hand-editable, so an index out of
     // range has to be corrected here rather than trusted.
     if (v.controlLayout < 0 || v.controlLayout > 3) v.controlLayout = 0;

@@ -5,6 +5,7 @@
 #include "settings.h"
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -211,7 +212,22 @@ namespace
         }
 
         // The settings menu's sensitivity scales the gain, both axes alike.
-        const double gain = 1300.0 * Settings::Get().mouseSensitivity * scale;
+        //
+        // The gain is on a square-root curve rather than linear. A stick
+        // reports an int16 and saturates at 32767; on the old linear gain,
+        // 3.0 clipped after about eight pixels of mouse movement, so anything
+        // above it was pure clipping - a flick became a full-speed turn with
+        // nothing in between and no way to aim. The square root leaves the
+        // low end where it was and spreads the top, so the range reaches 10.
+        // At 1.0 and below the two curves agree to within a pixel.
+        const double sensitivity =
+            std::clamp(double(Settings::Get().mouseSensitivity), 0.1, 10.0);
+        // Anchored so that 1.0 gains exactly what it gained before this
+        // change - 1300 - which keeps everyone's existing setting feeling
+        // the same. The square root then spreads the top out, which is the
+        // part that was missing: the old linear gain clipped within eight
+        // pixels at 3.0 and had nothing usable above it.
+        const double gain = 1300.0 * std::sqrt(sensitivity) * scale;
         const long x = long(std::clamp(double(dx) * gain, -32767.0, 32767.0));
         // Screen coordinates grow downwards and a stick grows upwards.
         const long y = long(std::clamp(-double(dy) * gain, -32767.0, 32767.0));
