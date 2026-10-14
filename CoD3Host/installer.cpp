@@ -1,4 +1,5 @@
 #include "installer.h"
+#include "logic.h"
 #include "xdvdfs.h"
 
 #include <cstdio>
@@ -254,8 +255,10 @@ static std::string chosen = [] {
                "booting default.xex instead.\n", wanted);
         return std::string("default.xex");
     }
-    if (std::string(wanted).size() >= 4 &&
-        _stricmp(wanted + std::string(wanted).size() - 4, ".xex") == 0)
+    // The shared predicate in logic.h, which scripts/selfcheck.ps1 compiles
+    // and runs. The same code, not a copy of it - a copy drifted and stopped
+    // guarding anything.
+    if (HostLogic::IsBootableXex(wanted))
         return std::string(wanted);
 
     printf("COD3_XEX is \"%s\", which does not end in .xex; "

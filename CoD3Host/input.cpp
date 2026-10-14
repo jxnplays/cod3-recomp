@@ -3,6 +3,7 @@
 #include "window.h"
 #include "overlay.h"
 #include "settings.h"
+#include "logic.h"
 
 #include <algorithm>
 #include <cmath>
@@ -226,9 +227,11 @@ namespace
         // on the old linear gain anything past 3 clipped within a few pixels
         // of movement - a flick became a full-speed turn with nothing in
         // between.
-        const double gain = (sensitivity <= 3.0
-            ? (1300.0 * sensitivity)
-            : (3900.0 * std::sqrt(sensitivity / 3.0))) * scale;
+        // The shared curve in logic.h, which scripts/selfcheck.ps1 compiles and
+        // runs. The same code, not a copy: the copy that was here drifted and
+        // made a 0.3 setting 1.83 times faster than it had always been, and
+        // reached the player as "the aiming is janky".
+        const double gain = HostLogic::MouseGain(sensitivity) * scale;
         const long x = long(std::clamp(double(dx) * gain, -32767.0, 32767.0));
         // Screen coordinates grow downwards and a stick grows upwards.
         const long y = long(std::clamp(-double(dy) * gain, -32767.0, 32767.0));

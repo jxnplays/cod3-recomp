@@ -120,6 +120,18 @@ say that in the PR rather than claiming it works.
 
 ---
 
+## Before you commit
+
+```powershell
+.\scripts\selfcheck.ps1              # logic, defaults and documentation
+.\scripts\selfcheck.ps1 -Game        # and boot the game on the default path
+```
+
+A green run writes `.git/SELFCHECK`; a failing run deletes it. Quote it in the
+commit message rather than asserting the change works, and see
+[docs/PROCESS.md](PROCESS.md) for what the checks do and do not cover, and for
+why adversarial review is required for anything touching behaviour.
+
 ## Reporting a bug
 
 A level name, what you did, and what happened. Frame rate and the contents of
