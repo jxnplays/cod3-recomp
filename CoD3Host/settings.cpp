@@ -179,7 +179,10 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     if (v.anisotropy < 2 || v.anisotropy > 16) v.anisotropy = 16;
     if (v.antialiasing < 0 || v.antialiasing > 5) v.antialiasing = 3;
     if (v.textureQuality < 0 || v.textureQuality > 2) v.textureQuality = 2;
-    if (v.fov < 65 || v.fov > 100) v.fov = 65;
+    // 65 to 180, matching the slider. It stopped at 100. 180 goes on the title's
+    // command buffer without complaint and without a fault, which is what the
+    // range is allowed on; what it looks like is for someone to judge.
+    if (v.fov < 65 || v.fov > 180) v.fov = 65;
     if (v.modelDetail < 0 || v.modelDetail > 1) v.modelDetail = 1;
     if (v.windowMode < 0 || v.windowMode > 1) v.windowMode = 0;
     // Up to 10, matching the slider. It used to stop at 3, which is low for raw
