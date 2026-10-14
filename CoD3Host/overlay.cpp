@@ -323,6 +323,33 @@ namespace
                     ImGui::Checkbox("Aim assist", &g_edit.aimAssist);
                     ImGui::SameLine();
                     ImGui::TextDisabled("(the game's own; takes effect after a restart)");
+                    // Aspect: the console's sixteen by nine with black bars, or the window's own
+                    // shape so a wider monitor shows more picture. The title is
+                    // told the wider mode too, so its field of view widens
+                    // rather than the picture being stretched.
+                    ImGui::TextUnformatted("Aspect ratio");
+                    ImGui::SameLine();
+                    static const char* const kAspectNames[] = {
+                        "16:9 (letterboxed)", "Fill the window"
+                    };
+                    int& aspect = g_edit.aspectMode;
+                    if (aspect < 0 || aspect > 1) aspect = 0;
+                    if (ImGui::BeginCombo("##aspect", kAspectNames[aspect], 2))
+                    {
+                        for (int i = 0; i < 2; i++)
+                        {
+                            const bool picked = (i == aspect);
+                            if (ImGui::Selectable(kAspectNames[i], picked))
+                            {
+                                aspect = i;
+                            }
+                            if (picked) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(16:9 is the console's own)");
+
                     ImGui::Checkbox("Controller support", &g_edit.controller);
                     ImGui::SameLine();
                     ImGui::TextDisabled("(the pad's own icons and menu navigation)");
@@ -470,6 +497,7 @@ namespace
                     a.controller != b.controller ||
                     a.controlLayout != b.controlLayout ||
                     a.playstationPrompts != b.playstationPrompts ||
+                    a.aspectMode != b.aspectMode ||
                     a.aimAssist != b.aimAssist ||
                     a.mouseSensitivity != b.mouseSensitivity ||
                     a.rawMouse != b.rawMouse ||

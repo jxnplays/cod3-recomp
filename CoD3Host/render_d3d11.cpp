@@ -1146,8 +1146,18 @@ namespace
         const bool fxaa = (AntiAliasing(settings) == 1 || AntiAliasing(settings) == 5) && g_fxaaPixelShader;
         if (frame != nullptr && frame->resource != nullptr)
         {
-            // Sixteen by nine, as the console sends it, centred.
-            const float aspect = 16.0f / 9.0f;
+            // Sixteen by nine, as the console sends it, centred - unless the player has
+            // asked to fill the window, in which case the picture takes the
+            // window's own shape.
+            //
+            // At sixteen by nine this is unchanged, so nothing about the
+            // default look moves. Wider than sixteen by nine, the frame the
+            // title drew is spread across the whole window rather than
+            // letterboxed, which needs the title's field of view to have
+            // widened to match; SeeAspectMode() is where that is reported.
+            const float aspect = (settings.aspectMode == 1 && clientHeight > 0)
+                ? float(clientWidth) / float(clientHeight)
+                : 16.0f / 9.0f;
             float width = float(clientWidth), height = width / aspect;
             if (height > clientHeight) { height = float(clientHeight); width = height * aspect; }
             const D3D11_VIEWPORT viewport{ std::floor((clientWidth - width) * 0.5f), std::floor((clientHeight - height) * 0.5f), std::floor(width), std::floor(height), 0.0f, 1.0f };
@@ -1245,6 +1255,18 @@ namespace
             }
         }
     }
+}
+
+namespace Render
+{
+    // The drawable size, for the video mode the title is told about.
+    //
+    // In namespace Render rather than the anonymous namespace above: a
+    // definition in an anonymous namespace has internal linkage and does not
+    // satisfy a call from kernel_video.cpp. Getting this wrong produced
+    // "undefined symbol: Render::SwapChainWidth" at link time.
+    int SwapChainWidth() { return g_swapChainWidth; }
+    int SwapChainHeight() { return g_swapChainHeight; }
 }
 
 // --- freed guest memory ---------------------------------------------------------------------------

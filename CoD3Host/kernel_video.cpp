@@ -1496,9 +1496,33 @@ PPC_FUNC(__imp__VdQueryVideoMode)
 
     // The same mode XGetVideoMode reports, so the title never sees the two
     // disagree.
+    //
+    // 1280x720 is sixteen by nine, the console's shape, and is what the
+    // title computes its projection from. On a wider monitor that is what
+    // letterboxes it. When the player has asked for the window's own shape,
+    // the width grows to match while the height stays, which is what widens
+    // the field of view - the picture then has more to show instead of the
+    // extra width being a stretch of what was already drawn.
+    uint32_t width = 1280, height = 720;
+    if (Settings::Get().aspectMode == 1)
+    {
+        const int clientWidth = Render::SwapChainWidth();
+        const int clientHeight = Render::SwapChainHeight();
+        if (clientWidth > 0 && clientHeight > 0 && clientWidth > clientHeight * 16 / 9)
+        {
+            // The window's shape, told to the title as pixels: width and
+            // height both times sixteen over nine, so the field of view
+            // widens by exactly the same factor the window is wider than
+            // sixteen by nine. Even, so it does not wobble by a pixel as the
+            // window is dragged, and never narrower than the console's.
+            width = uint32_t((int64_t(height) * clientWidth * 16 / clientHeight) / 9);
+            if (width < 1280) width = 1280;
+            width &= ~1u;   // even
+        }
+    }
     memset(Guest::Ptr(mode), 0, 48);
-    Guest::Write32(base, mode + 0x00, 1280);
-    Guest::Write32(base, mode + 0x04, 720);
+    Guest::Write32(base, mode + 0x00, width);
+    Guest::Write32(base, mode + 0x04, height);
     Guest::Write32(base, mode + 0x08, 0);
     Guest::Write32(base, mode + 0x0C, 1);
     Guest::Write32(base, mode + 0x10, 1);

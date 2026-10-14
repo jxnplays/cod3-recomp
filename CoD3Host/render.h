@@ -30,6 +30,12 @@ namespace Render
     // Whether the host GPU is used at all. The device is made on first use.
     bool Enabled();
 
+    // The drawable area of the swap chain, in pixels. Zero until the window
+    // exists. The video mode the title is told about is derived from these
+    // when the player wants the window's own shape rather than the console's.
+    int SwapChainWidth();
+    int SwapChainHeight();
+
     // A draw from the command stream: the initiator word, and for an indexed
     // draw the guest address of the indices and their size word.
     void Draw(uint32_t initiator, uint32_t indexBase, uint32_t indexWord);

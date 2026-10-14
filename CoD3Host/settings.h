@@ -33,6 +33,12 @@ namespace Settings
         int textureFilter = 3;        // 0 the title's own, 1 bilinear, 2 trilinear, 3 anisotropic
         int anisotropy = 16;          // 2..16, with textureFilter 3
         bool vsync = true;
+
+// 0 letterbox to sixteen by nine, the console's shape and the default.
+// 1 fill the window, so a wider monitor shows more picture rather than
+// black bars. The title is told the wider mode as well, so its field of view
+// widens with it instead of the picture being stretched.
+int aspectMode = 0;
         bool unlockFrameRate = true;  // a level played at what the machine can do; the menus and films keep the console's 60
         int antialiasing = 3;         // 0 none, 1 FXAA, 2 MSAA 2x, 3 MSAA 4x, 4 MSAA 8x, 5 MSAA 4x and FXAA
         int textureQuality = 2;       // 0 low (two mip levels dropped), 1 medium (one), 2 high (all)
