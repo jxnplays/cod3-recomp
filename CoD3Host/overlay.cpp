@@ -381,6 +381,40 @@ namespace
                     ImGui::SameLine();
                     ImGui::TextDisabled("(applied at the next front end load too)");
 
+                    // Button prompts: the title's own ps2 cvar. Not the same
+                    // thing as the layout above - the layout says which
+                    // physical button does what, this says which symbols the
+                    // title draws on screen. The title ships both sets in its
+                    // font data.
+                    ImGui::TextUnformatted("Button prompts");
+                    ImGui::SameLine();
+                    static const char* const kPromptNames[] = { "Xbox", "PlayStation" };
+                    // The combo works in ints, the setting is a bool. Copied in rather than
+                    // aliased: binding an int& to the bool's ternary made a
+                    // reference to a temporary.
+                    int prompt = g_edit.playstationPrompts ? 1 : 0;
+                    if (ImGui::BeginCombo("##prompts", kPromptNames[prompt], 2))
+                    {
+                        for (int i = 0; i < 2; i++)
+                        {
+                            const bool picked = (i == prompt);
+                            if (ImGui::Selectable(kPromptNames[i], picked))
+                            {
+                                prompt = i;
+                                // Into the settings, not just the local the
+                                // combo reads: this is the value that gets
+                                // saved to the ini and re-sent at startup.
+                                g_edit.playstationPrompts = (i == 1);
+                                Kernel::QueueConsoleCommand(
+                                    std::string("set ps2 ") + (i == 1 ? "1" : "0"));
+                            }
+                            if (picked) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(ps2; sent again at every startup)");
+
                     ImGui::Separator();
                     ImGui::TextUnformatted("Keys");
                     if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_SizingStretchProp))
@@ -435,6 +469,7 @@ namespace
                 dirty =
                     a.controller != b.controller ||
                     a.controlLayout != b.controlLayout ||
+                    a.playstationPrompts != b.playstationPrompts ||
                     a.aimAssist != b.aimAssist ||
                     a.mouseSensitivity != b.mouseSensitivity ||
                     a.rawMouse != b.rawMouse ||

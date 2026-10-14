@@ -53,6 +53,14 @@ namespace Settings
 // but it is clamped on load like everything else - an ini edited by hand can
 // say anything at all, and an out-of-range index would read past the table.
 int controlLayout = 0;
+
+// Which button prompts the title draws: false for Xbox, true for PlayStation.
+// This is the title's own ps2 cvar, which is in its variable name table. It
+// is set from TitleCommandsChanged rather than only when the picker is used,
+// because the prompts come out of the title's font data and the font is
+// loaded long before the settings menu can be opened - a live change may
+// arrive too late to be picked up.
+bool playstationPrompts = false;
         float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 10
         bool rawMouse = true;            // the mouse's own counts, not the pointer's travel
         int keys[ActionCount] = {};

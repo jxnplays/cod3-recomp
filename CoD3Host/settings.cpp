@@ -160,6 +160,7 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
             else if (key == "aim_assist") v.aimAssist = atoi(value.c_str()) != 0;
             else if (key == "controller") v.controller = atoi(value.c_str()) != 0;
         else if (key == "control_layout") v.controlLayout = atoi(value.c_str());
+        else if (key == "playstation_prompts") v.playstationPrompts = atoi(value.c_str()) != 0;
             else if (key == "mouse_sensitivity") v.mouseSensitivity = float(atof(value.c_str()));
             else if (key == "raw_mouse") v.rawMouse = atoi(value.c_str()) != 0;
             else if (key.compare(0, 4, "key_") == 0)
@@ -188,6 +189,7 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     // Four layouts, 0 to 3. The ini is hand-editable, so an index out of
     // range has to be corrected here rather than trusted.
     if (v.controlLayout < 0 || v.controlLayout > 3) v.controlLayout = 0;
+    // A checkbox: anything but 0 is "on", so there is no range to check.
     std::lock_guard<std::mutex> lock(g_mutex);
     g_values = v;
 }
@@ -204,7 +206,8 @@ void Settings::Save()
         else snprintf(resolution, sizeof(resolution), "desktop");
         fprintf(file, "[graphics]\nrenderer = %d\nresolution = %s\nresolution_scale = %d\ntexture_filter = %d\nanisotropy = %d\nvsync = %d\nunlock_frame_rate = %d\nantialiasing = %d\ntexture_quality = %d\nfov = %d\nmodel_detail = %d\naim_blur = %d\nconsole_depth = %d\nnative_commands = %d\nwatch_writes = %d\nwindow_mode = %d\nfps_overlay = %d\nstats_overlay = %d\n",
             v.renderer, resolution, v.resolutionScale, v.textureFilter, v.anisotropy, v.vsync ? 1 : 0, v.unlockFrameRate ? 1 : 0, v.antialiasing, v.textureQuality, v.fov, v.modelDetail, v.aimBlur ? 1 : 0, v.consoleDepth ? 1 : 0, v.nativeCommands ? 1 : 0, v.watchWrites ? 1 : 0, v.windowMode, v.fpsOverlay ? 1 : 0, v.statsOverlay ? 1 : 0);
-        fprintf(file, "[game]\naim_assist = %d\ncontroller = %d\ncontrol_layout = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.controller ? 1 : 0, v.controlLayout, v.mouseSensitivity, v.rawMouse ? 1 : 0);
+        fprintf(file, "[game]\naim_assist = %d\ncontroller = %d\ncontrol_layout = %d\nplaystation_prompts = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.controller ? 1 : 0, v.controlLayout,
+        v.playstationPrompts ? 1 : 0, v.mouseSensitivity, v.rawMouse ? 1 : 0);
         fprintf(file, "[keys]\n");
         for (int i = 0; i < ActionCount; i++) fprintf(file, "key_%s = %d\n", ActionKeys[i], v.keys[i]);
         fclose(file);
@@ -280,6 +283,26 @@ std::string Settings::TitleCommandsChanged()
     static bool appliedAimAssist = true;
     const Values v = Get();
     std::string commands;
+
+    // The button prompts. Sent once per run, not once per call: this function is
+    // called every frame, so an unconditional append put "set ps2" on the
+    // title's buffer hundreds of times a second. A static remembers it went.
+    //
+    // Once is enough, and is in fact the point - the prompts come out of the
+    // title's own font data, and the font is loaded long before the settings
+    // menu can be opened, so an early value is the only one likely to be
+    // picked up. A change made from the menu is sent directly by the picker.
+    //
+    // ps2 is the title's own cvar: it is in its variable name table, sorted
+    // between ProfileWriteData and r_clear. That it changes the on-screen
+    // prompts has not been confirmed by looking at one, so this is the
+    // mechanism believed to drive it rather than a verified result.
+    static bool sentPrompts = false;
+    if (!sentPrompts)
+    {
+        sentPrompts = true;
+        commands += std::string("set ps2 ") + (v.playstationPrompts ? "1" : "0") + "\n";
+    }
     if (v.fov != appliedFov)
     {
         appliedFov = v.fov;
