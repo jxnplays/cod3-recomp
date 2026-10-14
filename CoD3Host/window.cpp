@@ -282,14 +282,17 @@ namespace
         // loop to stop: clicking the X on the window closed the window and
         // left the game running with no window, still spending CPU, which
         // looked like the client had hung.
-        //
-        // Guest::Shutdown stops the worker threads before the process goes, so
-        // they do not run on into a half-torn-down guest. Nothing is flushed
-        // here - the log copier is a detached thread and the process is about
-        // to end it anyway, which is the same thing the title's own exit does.
-        printf("\nThe window was closed; stopping the guest and exiting.\n");
+        printf("\nThe window was closed; exiting.\n");
         fflush(stdout);
-        Guest::Shutdown();
+        // Guest::Shutdown is deliberately NOT called here. It does
+        // VirtualFree(MEM_RELEASE) on the whole reservation and nulls
+        // Guest::Base - and that reservation is where the recompiled code the
+        // guest threads are executing lives. Freeing it out from under them
+        // turns a clean exit into a race: they either fault in generated code
+        // with Base already null, or lose the race to an ExitProcess from the
+        // title's own path and get killed mid-unmap. ExitProcess does not need
+        // guest memory reclaimed; leaving it mapped lets in-flight threads
+        // fall over quietly while the process goes.
         Kernel::Exit(0);
     }
 }

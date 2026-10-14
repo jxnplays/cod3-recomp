@@ -145,23 +145,6 @@ namespace
         outX = 0;
         outY = 0;
 
-        // Put the pointer back in the middle while it steers.
-        //
-        // It used to be clipped to the window and warped to the centre once,
-        // when it was taken. Then it moved outwards with every flick, reached
-        // the clip boundary, and stopped moving while the stick kept turning
-        // the other way - which is the jank: the aiming ran out before the
-        // mouse did. Re-centring every time this is read keeps it available
-        // for as long as the hand can move.
-        //
-        // Safe with raw input, which is what the movement is read from: raw
-        // reports how far the device moved, not where the pointer ended up,
-        // so warping the pointer produces no movement of its own.
-        if (g_mouseHeld.load())
-        {
-            SetCursorPos(g_centre.x, g_centre.y);
-        }
-
         // The mouse's own movement is taken whether it is used or not, so
         // that what piled up while the menu was open is not a jump the
         // moment the window takes the mouse back.
@@ -230,21 +213,22 @@ namespace
 
         // The settings menu's sensitivity scales the gain, both axes alike.
         //
-        // The gain is on a square-root curve rather than linear. A stick
-        // reports an int16 and saturates at 32767; on the old linear gain,
-        // 3.0 clipped after about eight pixels of mouse movement, so anything
-        // above it was pure clipping - a flick became a full-speed turn with
-        // nothing in between and no way to aim. The square root leaves the
-        // low end where it was and spreads the top, so the range reaches 10.
-        // At 1.0 and below the two curves agree to within a pixel.
         const double sensitivity =
             std::clamp(double(Settings::Get().mouseSensitivity), 0.1, 10.0);
-        // Anchored so that 1.0 gains exactly what it gained before this
-        // change - 1300 - which keeps everyone's existing setting feeling
-        // the same. The square root then spreads the top out, which is the
-        // part that was missing: the old linear gain clipped within eight
-        // pixels at 3.0 and had nothing usable above it.
-        const double gain = 1300.0 * std::sqrt(sensitivity) * scale;
+        // Linear up to 3, which is where it always was, and a square root
+        // above it. Piecewise rather than curved throughout: a plain sqrt
+        // anchored at 1.0 leaves 1.0 unchanged but makes 0.3 more than twice
+        // as fast as it was and 3.0 slower. That was shipped, and it came back
+        // as "the aiming feels janky" - a curve that changed every setting
+        // below the point it was meant to affect.
+        //
+        // The curve is there only for the top. A stick saturates at 32767, so
+        // on the old linear gain anything past 3 clipped within a few pixels
+        // of movement - a flick became a full-speed turn with nothing in
+        // between.
+        const double gain = (sensitivity <= 3.0
+            ? (1300.0 * sensitivity)
+            : (3900.0 * std::sqrt(sensitivity / 3.0))) * scale;
         const long x = long(std::clamp(double(dx) * gain, -32767.0, 32767.0));
         // Screen coordinates grow downwards and a stick grows upwards.
         const long y = long(std::clamp(-double(dy) * gain, -32767.0, 32767.0));
