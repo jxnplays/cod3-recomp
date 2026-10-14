@@ -194,28 +194,33 @@ namespace
         }
 
         // A stick's deflection is a speed: the title turns by it times its
-        // frame's time, and reads the pad once a frame (twice, the second
-        // read a moment after the first). The distance the mouse went since
-        // the read before is a speed only at one frame rate, so taken as it
-        // is, the turn would slow down as the frame rate went up (at 100 a
-        // second to 60 per cent of the turn at 60). It is scaled to the
-        // distance over a sixtieth of a second, the rate the gain was set
-        // at, so a sweep of the hand is the same turn at any frame rate.
-        // The read that comes straight after another is left as it is: what
-        // it carries is the crumb in between.
-        double scale = 1.0;
-        {
-            static auto lastRead = std::chrono::steady_clock::now();
-            const auto now = std::chrono::steady_clock::now();
-            const double interval = std::chrono::duration<double>(now - lastRead).count();
-            lastRead = now;
-            if (interval >= 0.002) scale = (1.0 / 60.0) / std::min(interval, 0.05);
-        }
+        // frame's time. The distance the mouse went since the previous read
+        // is a speed only once it is divided by the gap between reads.
+        //
+        // The gap used to be the interval between consecutive ReadMouse calls,
+        // which is wrong twice over. ReadMouse runs whenever the guest polls
+        // XamInputGetState, throttled to 4 ms, so at 60 fps it runs about four
+        // times a frame. Meanwhile the window thread only pumps WM_INPUT every
+        // 8 ms, so each read receives either eight milliseconds of movement or
+        // none at all. Dividing eight milliseconds of counts by a four
+        // millisecond gap over-reports by exactly two, and the read after it
+        // reports zero - and because the two periods are not commensurate the
+        // phase drifts, so the title alternates between a doubled burst and
+        // nothing. That is judder, and it is indistinguishable from a broken
+        // mouse.
+        //
+        // So the scale is a fixed reference rather than a measured interval.
+        // Scaling against a constant cannot drift with the pump, cannot
+        // alternate, and cannot spike after a stall. If the frame rate is
+        // unlocked the aim rate becomes framerate dependent - a trade that is
+        // made deliberately, because the alternative is unusable.
+        constexpr double kReferenceInterval = 1.0 / 60.0;
+        const double scale = kReferenceInterval / 0.004;
 
         // The settings menu's sensitivity scales the gain, both axes alike.
         //
         const double sensitivity =
-            std::clamp(double(Settings::Get().mouseSensitivity), 0.1, 10.0);
+            std::clamp(double(Settings::Get().mouseSensitivity), HostLogic::kMinMouseSensitivity, 10.0);
         // Linear up to 3, which is where it always was, and a square root
         // above it. Piecewise rather than curved throughout: a plain sqrt
         // anchored at 1.0 leaves 1.0 unchanged but makes 0.3 more than twice
@@ -450,12 +455,33 @@ namespace
         // one thing a menu wants it for: clicking; F1 and the middle button
         // take it there. Escape always gives it back, and in a level it is
         // also Start, so the pause menu opens with the pointer free to leave.
-        const bool inLevel = Kernel::Stats().filesOpened.load(std::memory_order_relaxed) >= 40;
+        // "Are we in a level", unchanged - and separately "have we ever been
+        // in one", which is what the pointer release needs. Without the second
+        // the release would fire before the first level had ever loaded and
+        // take the mouse away from the front end.
+        static uint64_t filesOpenedPeak = 0;
+        const uint64_t filesOpened = Kernel::Stats().filesOpened.load(std::memory_order_relaxed);
+        if (filesOpened > filesOpenedPeak) filesOpenedPeak = filesOpened;
+        const bool inLevel = filesOpened >= 40;
         const bool escapeDown = Down(VK_ESCAPE);
         // Start is held for a few reads after Escape frees the pointer, so
         // the title's own poll, which is slower than these reads, sees it.
         static int startReadsLeft = 0;
         if (g_mouseHeld.load() && escapeDown) { SetHold(false); startReadsLeft = 10; }
+        else if (g_mouseHeld.load() && !inLevel && filesOpenedPeak >= 40)
+        {
+            // Leaving a level gave the pointer back.
+            //
+            // It used to be held until Escape. Back in the menus the cursor
+            // stayed hidden and clipped to the window and did nothing at all,
+            // because every consumer is gated on "held" - so the mouse was
+            // simply dead until the player happened to press Escape. The
+            // filesOpenedPeak guard is what makes this "was in a level" rather
+            // than "is not in one", so it cannot fire before the first level
+            // has ever loaded.
+            SetHold(false);
+            startReadsLeft = 0;
+        }
         else if (!g_mouseHeld.load())
         {
             static bool takenForLevel = false;

@@ -139,13 +139,41 @@ int main() {
     for (int i = 1; i <= 30; i++) {
         const double s = i / 10.0;
         if (s > 3.0) break;
-        if (HostLogic::MouseGain(s) != 1300.0 * s) {
-            printf("  gain %.2f: %.4f, expected %.4f\n", s, HostLogic::MouseGain(s), 1300.0 * s);
+        if (HostLogic::MouseGain(s) != 150.0 * s) {
+            printf("  gain %.2f: %.4f, expected %.4f\n", s, HostLogic::MouseGain(s), 150.0 * s);
             bad++;
         }
     }
-    if (!(HostLogic::MouseGain(10.0) > 1300.0 * 3.0)) { printf("  gain 10.0 is not above 3.0\n"); bad++; }
-    if (!(HostLogic::MouseGain(10.0) < 1300.0 * 10.0)) { printf("  gain 10.0 is not below the clipping linear gain\n"); bad++; }
+    if (!(HostLogic::MouseGain(10.0) > 150.0 * 3.0)) { printf("  gain 10.0 is not above 3.0\n"); bad++; }
+    if (!(HostLogic::MouseGain(10.0) < 150.0 * 10.0)) { printf("  gain 10.0 is not below the clipping linear gain\n"); bad++; }
+
+    // The calibration itself, which is the thing that was wrong.
+    //
+    // The title reads a stick that saturates at 32767 and it is fed counts, so
+    // what matters is how many counts reach full deflection. ReadMouse emits
+    // `counts * gain * scale` per read and reads every 4 ms, so the scale
+    // appears once in the stick value and once in how many reads make up a
+    // sixtieth of a second - and the two cancel exactly:
+    //
+    //   counts per sixtieth = 32767 / gain
+    //
+    // At the old anchor of 1300 that is 25 counts, which is 1500 counts a
+    // second: 24 mm/s of hand movement at 1600 DPI, so every ordinary flick
+    // saturated and fine aim was impossible. At 150 it is about 220.
+    //
+    // Asserted as a band so the curve can still be tuned later, tight enough
+    // that returning to the old order of magnitude fails - 25 is well under.
+    {
+        const double countsPer60 = 32767.0 / HostLogic::MouseGain(1.0);
+        printf("  at sensitivity 1.0, a full turn needs %.0f counts per sixtieth of a second\n", countsPer60);
+        if (countsPer60 < 150.0 || countsPer60 > 800.0) {
+            printf("  calibration out of band: %.0f counts, want 150..800\n", countsPer60);
+            bad++;
+        }
+        if (HostLogic::kMinMouseSensitivity > 0.02) { printf("  the floor is not low enough for a high-DPI mouse\n"); bad++; }
+        const double atFloor = 32767.0 / HostLogic::MouseGain(HostLogic::kMinMouseSensitivity);
+        if (atFloor < countsPer60 * 10.0) { printf("  the floor is too high to matter\n"); bad++; }
+    }
     return bad;
 }
 '@
@@ -404,7 +432,12 @@ if ($settings -match 'if \(v\.aspectMode < 0 \|\| v\.aspectMode > 1\) v\.aspectM
 else { Fail 'aspect default' 'aspectMode is not clamped to 0 on load' }
 if ($settings -match 'if \(v\.fov < 65 \|\| v\.fov > 180\) v\.fov = 65;') { Pass 'field of view defaults to the title own 65' }
 else { Fail 'fov default' 'the fov range check is not 65..180' }
-if ($settings -match 'mouseSensitivity >= 0\.1f && v\.mouseSensitivity <= 10\.0f') { Pass 'sensitivity range is 0.1 to 10' }
+# The floor moved from 0.1 so a high-DPI mouse has somewhere to go: even at
+    # 0.1 the corrected gain saturated on an ordinary flick. Asserted against
+    # the shared constant rather than a literal, because this range exists in
+    # three places - the menu, the ini validation and ReadMouse - and three
+    # copies is how they drift apart in the first place.
+    if ($settings -match 'mouseSensitivity >= float\(HostLogic::kMinMouseSensitivity\)') { Pass 'the sensitivity floor is the shared constant, not a third copy of the number' }
 else { Fail 'sensitivity range' 'the check is not 0.1..10' }
 
 # ps2 is sent once per process, not once per frame: TitleCommandsChanged runs

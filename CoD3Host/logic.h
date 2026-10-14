@@ -40,19 +40,42 @@ namespace HostLogic
 
     // The mouse gain for a sensitivity setting.
     //
-    // Piecewise on purpose. A stick reports an int16 and saturates at 32767,
-    // so a plain linear gain made anything past 3.0 clip within a few pixels
-    // of movement - a flick became a full-speed turn with nothing in between.
-    // And a plain square root to fix that was worse: anchored anywhere it
-    // moves every setting below the point it was meant to affect, which is
-    // exactly how a 0.3 setting ended up nearly twice as fast as it had been.
+    // The stick the title reads saturates at 32767, and it is fed COUNTS
+    // rather than a position. So the gain is really "stick units per mouse
+    // count", and what matters is how many counts it takes to reach full
+    // deflection.
     //
-    // Below 3.0 this is bit for bit the gain the game has always had.
+    // It used to be 1300 per count, which sounds harmless and is not: with
+    // the frame normalisation in ReadMouse, full deflection arrived after
+    // about 25 counts in a sixtieth of a second - 1500 counts a second. At
+    // 1600 DPI that is 24 mm per second of hand movement for full turn speed.
+    // No mouse can be moved that slowly, so every ordinary flick pinned the
+    // stick at 32767 and the output was a square wave: full speed or nothing,
+    // with no fine aim in between. That is what "the aiming is not fluid"
+    // turned out to be - not too slow, but saturated.
+    //
+    // Even the bottom of the old 0.1-10 slider could not rescue it: at 0.1
+    // it still saturated at about 240 mm/s, which is below a normal flick.
+    //
+    // The anchor is now 150 per count, which is roughly 4000 counts per
+    // sixtieth of a second for full deflection - a turn across a desk rather
+    // than across a fingernail. The slider floor drops to 0.01 so a high-DPI
+    // mouse still has somewhere to go.
+    //
+    // The piecewise shape stays, and for the same reason: a stick saturates,
+    // so the useful range is bounded, and a plain square root anchored at 1
+    // moves every setting below the point it was meant to affect - which is
+    // how a 0.3 setting once became nearly twice as fast as it had been.
     inline double MouseGain(double sensitivity)
     {
-        if (sensitivity <= 3.0) return 1300.0 * sensitivity;
-        return 3900.0 * std::sqrt(sensitivity / 3.0);
+        if (sensitivity <= 3.0) return 150.0 * sensitivity;
+        return 450.0 * std::sqrt(sensitivity / 3.0);
     }
+
+    // The lowest the sensitivity slider may go. Matched by the menu, the ini
+    // validation and ReadMouse; they were three separate copies of the same
+    // range and all three have to move together.
+    inline constexpr double kMinMouseSensitivity = 0.01;
 }
 
 #endif

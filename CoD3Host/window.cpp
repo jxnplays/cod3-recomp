@@ -271,7 +271,16 @@ namespace
             }
 
             Render::PresentIdle();
-            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            // One millisecond, not eight.
+            //
+            // WM_INPUT only arrives when this loop runs, so an eight millisecond
+            // sleep hands the mouse its movement in eight millisecond lumps while
+            // the input side drains every four. Each read then got either a
+            // doubled burst or nothing, alternating as the phase drifted - which
+            // is what the aiming felt like. One millisecond puts the pump well
+            // inside the drain interval, so movement arrives smoothly and the
+            // accumulator holds something every time it is read.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
         g_window.store(nullptr);

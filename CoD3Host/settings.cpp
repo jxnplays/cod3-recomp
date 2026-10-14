@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "logic.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -194,7 +195,9 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     // mouse: at 3 the gain already saturates the stick's range within about
     // eight pixels of movement, so there was no room left between "too slow"
     // and "clipped".
-    if (!(v.mouseSensitivity >= 0.1f && v.mouseSensitivity <= 10.0f)) v.mouseSensitivity = 1.0f;
+    // The floor is shared with the menu and with ReadMouse; it used to be 0.1,
+    // which could not take the edge off a modern mouse at any setting.
+    if (!(v.mouseSensitivity >= float(HostLogic::kMinMouseSensitivity) && v.mouseSensitivity <= 10.0f)) v.mouseSensitivity = 1.0f;
     // Four layouts, 0 to 3. The ini is hand-editable, so an index out of
     // range has to be corrected here rather than trusted.
     if (v.controlLayout < 0 || v.controlLayout > 3) v.controlLayout = 0;

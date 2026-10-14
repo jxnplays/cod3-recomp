@@ -1,6 +1,7 @@
 #include "overlay.h"
 #include "kernel.h"
 #include "settings.h"
+#include "logic.h"
 #include "render_stats.h"
 #include "render.h"
 #include "gamepad_nav.h"
@@ -362,7 +363,8 @@ namespace
                 }
                 if (ImGui::BeginTabItem("Controls"))
                 {
-                    ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity, 0.1f, 10.0f, "%.2f");
+                    ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity,
+                                             float(HostLogic::kMinMouseSensitivity), 10.0f, "%.2f");
                     ImGui::TextDisabled("Both axes alike.");
                     ImGui::Checkbox("Raw mouse input", &g_edit.rawMouse);
                     ImGui::SameLine();
