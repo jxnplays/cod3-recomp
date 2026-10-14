@@ -254,7 +254,7 @@ desktop's by default) and the resolution scale in per cent of it,
 texture filtering and anisotropy, anti aliasing,
 texture quality (Low and Medium leave the top two or one mip levels of
 every texture out on upload), the field of view (the title's own
-`cg_fov`, 65 to 100, in the config at start and on the command buffer
+`cg_fov`, 65 to 180, in the config at start and on the command buffer
 when it changes), the blur while aiming (the title's depth of field down
 the sights: three draws downsample the frame to a quarter, blur it and
 blend it back over the frame by depth; the last of them is left out when

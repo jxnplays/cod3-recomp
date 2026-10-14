@@ -139,6 +139,25 @@ before the failure paths, there was no summary, and a stale green
 failure while claiming to. Diagnostics now go to a file, and a hard error was
 tested to fail the run, print the reason, and delete the verdict.
 
+### Checks added since this file was last written
+
+Four, and they are the ones with the strongest provenance here - each was run
+against the defect it names and confirmed to go red, with one exception
+recorded rather than dressed up.
+
+| check | what it caught |
+|---|---|
+| the default present path runs the shader it replaced | a correct program that is never selected |
+| the grading table's texture format | the whole game rendering four times too dark |
+| the grading defaults are the identity as the GPU reads them | a check that certified that 4x bug as correct |
+| sharpening is visible, bounded, and leaves flat areas alone | a slider that did nothing an eye could see |
+| the key table survives erasing across a rehash | nothing - it passes against the old code too, because the hazard turns out to be unreachable, and the test says so |
+
+That last one is the interesting one, and it is the reason the table is
+written down rather than left implicit. A test that would have caught a bug
+which cannot happen is not a failing test; it is a test that proves the bug
+cannot happen. Both are worth having, and only one of them is worth claiming.
+
 ## The three things a check cannot do
 
 Stated plainly, because these are where the failures actually came from:
