@@ -87,24 +87,45 @@ jobs:
 
       # Glob rather than name a path, the way recompile.ps1 does. That is what
       # lets the job survive a change of Visual Studio version or edition.
+      #
+      # -Recurse is load-bearing. Without it ** behaves as a single *, so the
+      # pattern only matches when Visual Studio happens to sit one directory
+      # below its root - which the Tools build job did, and this one did not,
+      # and it failed on a runner rather than on anything in the code. With
+      # -Recurse, ** means what it looks like.
       - name: Locate Visual Studio, CMake and Ninja
         id: env
         shell: pwsh
         run: |
-          $vcvars = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue) |
-                     Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $vcvars) { throw 'vcvars64.bat not found; is Visual Studio on this runner?' }
+          # Each root is searched literally rather than through one wildcard
+          # pattern like 'C:\Program Files*\...', which silently finds
+          # nothing on a machine where Visual Studio is under "Program Files
+          # (x86)": the * matches the directory name including its brackets,
+          # and PowerShell then reads "(x86)" as grouping syntax rather than as
+          # part of the name. It worked on the runner only because that runner
+          # has Visual Studio under "Program Files" with no brackets.
+          #
+          # Searching each known root with -LiteralPath and recursing covers
+          # both layouts, and cannot be broken by a directory that contains
+          # wildcard characters.
+          $vcvars = @()
+          foreach ($root in @(
+              (Join-Path $env:ProgramFiles 'Microsoft Visual Studio'),
+              (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio'))) {
+            if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+            $vcvars = @(Get-ChildItem -LiteralPath $root -Filter 'vcvars64.bat' -Recurse -File -ErrorAction SilentlyContinue)
+            if ($vcvars.Count -gt 0) { break }
+          }
+          $vcvars = $vcvars | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $vcvars) { throw 'vcvars64.bat not found under Program Files or Program Files (x86)' }
           Write-Host "vcvars: $vcvars"
           "vcvars=$vcvars" >> $env:GITHUB_OUTPUT
 
-          $cmake = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' -ErrorAction SilentlyContinue) |
-                    Sort-Object FullName -Descending | Select-Object -First 1
-          $ninja = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\*\*\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe' -ErrorAction SilentlyContinue) |
-                    Sort-Object FullName -Descending | Select-Object -First 1
-          if ($cmake) { Write-Host "cmake: $($cmake.FullName)"; "cmake_dir=$($cmake.DirectoryName)" >> $env:GITHUB_OUTPUT }
-          else { Write-Host 'cmake not inside Visual Studio; will use PATH' }
-          if ($ninja) { Write-Host "ninja: $($ninja.FullName)"; "ninja_dir=$($ninja.DirectoryName)" >> $env:GITHUB_OUTPUT }
-          else { Write-Host 'ninja not inside Visual Studio; will use PATH' }
+          $vsRoot = Split-Path (Split-Path (Split-Path (Split-Path $vcvars)))
+          $cmake = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+          $ninja = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
+          if (Test-Path -LiteralPath (Join-Path $cmake 'cmake.exe')) { "cmake_dir=$cmake" >> $env:GITHUB_OUTPUT }
+          if (Test-Path -LiteralPath (Join-Path $ninja 'ninja.exe')) { "ninja_dir=$ninja" >> $env:GITHUB_OUTPUT }
 
       - name: Build XenonRecomp and XenonAnalyse
         shell: pwsh
@@ -165,14 +186,14 @@ jobs:
         id: env
         shell: pwsh
         run: |
-          $vcvars = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue) |
+          $vcvars = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\VC\Auxiliary\Build\vcvars64.bat' -Recurse -ErrorAction SilentlyContinue) |
                      Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           if (-not $vcvars) { throw 'vcvars64.bat not found; is Visual Studio on this runner?' }
           "vcvars=$vcvars" >> $env:GITHUB_OUTPUT
 
-          $cmake = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' -ErrorAction SilentlyContinue) |
+          $cmake = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' -Recurse -ErrorAction SilentlyContinue) |
                     Sort-Object FullName -Descending | Select-Object -First 1
-          $ninja = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe' -ErrorAction SilentlyContinue) |
+          $ninja = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe' -Recurse -ErrorAction SilentlyContinue) |
                     Sort-Object FullName -Descending | Select-Object -First 1
           if ($cmake) { "cmake_dir=$($cmake.DirectoryName)" >> $env:GITHUB_OUTPUT }
           if ($ninja) { "ninja_dir=$($ninja.DirectoryName)" >> $env:GITHUB_OUTPUT }
