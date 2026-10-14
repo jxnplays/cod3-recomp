@@ -67,6 +67,19 @@ int controlLayout = 0;
 // loaded long before the settings menu can be opened - a live change may
 // arrive too late to be picked up.
 bool playstationPrompts = false;
+
+// Colour grading, all at the identity so the picture does not move until one
+// is touched. contrast and saturation are multipliers about mid grey and about
+// the pixel's luma; temperature is a warm/cool push in tenths, and brightness
+// is a lift.
+float contrast = 1.0f;
+float saturation = 1.0f;
+float temperature = 0.0f;
+float brightness = 0.0f;
+
+// Contrast Adaptive Sharpening, 0 off to 1 as strong as the algorithm gets
+// before ringing. Zero means the CAS shader is never selected.
+float sharpen = 0.0f;
         float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 10
         bool rawMouse = true;            // the mouse's own counts, not the pointer's travel
         int keys[ActionCount] = {};

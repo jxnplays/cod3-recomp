@@ -289,11 +289,11 @@ namespace
                     const char* qualities[] = { "Low", "Medium", "High" };
                     ImGui::Combo("Texture quality", &g_edit.textureQuality, qualities, 3);
                     // 65 to 180. The console's own is 65 and it used to stop at 100, which is
-    // narrower than most people want and short of what a wide field gives.
-    // 180 was put on the title's command buffer and it neither faulted nor
-    // slowed: 123 fps, no guest faults. Whether it looks right is a thing
-    // for an eye on it.
-    ImGui::SliderInt("Field of view", &g_edit.fov, 65, 180, g_edit.fov == 65 ? "65 (the game's own)" : "%d");
+                    // narrower than most people want and short of what a wide field gives.
+                    // 180 was put on the title's command buffer and it neither faulted nor
+                    // slowed: 123 fps, no guest faults. Whether it looks right is a thing
+                    // for an eye on it.
+                    ImGui::SliderInt("Field of view", &g_edit.fov, 65, 180, g_edit.fov == 65 ? "65 (the game's own)" : "%d");
                     const char* details[] = { "The game's own", "Maximum" };
                     ImGui::Combo("Model detail", &g_edit.modelDetail, details, 2);
                     ImGui::SameLine();
@@ -316,6 +316,25 @@ namespace
                     ImGui::TextDisabled("(the menus and films keep the console's 60)");
                     ImGui::Checkbox("Show FPS", &g_edit.fpsOverlay);
                     ImGui::Checkbox("Renderer statistics", &g_edit.statsOverlay);
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Colour"))
+                {
+                    // Everything here runs after the frame is drawn and before
+                    // gamma. With every slider at its default the pass is the
+                    // identity, so this page left alone must not change a
+                    // single pixel - that is the property that makes it safe
+                    // to ship at all.
+                    ImGui::TextUnformatted("Sharpening");
+                    ImGui::SliderFloat("Sharpen", &g_edit.sharpen, 0.0f, 1.0f, g_edit.sharpen == 0.0f ? "Off" : "%.2f");
+                    ImGui::TextDisabled("Sharpens against the local contrast, so flat areas are left flat. Overrides FXAA, because the two work on edges in opposite directions.");
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Grading");
+                    ImGui::SliderFloat("Brightness", &g_edit.brightness, -0.5f, 0.5f, g_edit.brightness == 0.0f ? "0 (the game's own)" : "%+.3f");
+                    ImGui::SliderFloat("Contrast", &g_edit.contrast, 0.5f, 2.0f, g_edit.contrast == 1.0f ? "1 (the game's own)" : "%.3f");
+                    ImGui::SliderFloat("Saturation", &g_edit.saturation, 0.0f, 2.0f, g_edit.saturation == 1.0f ? "1 (the game's own)" : "%.3f");
+                    ImGui::SliderFloat("Temperature", &g_edit.temperature, -10.0f, 10.0f, g_edit.temperature == 0.0f ? "0 (the game's own)" : "%+.1f");
+                    ImGui::TextDisabled("Applied before the console's own gamma table, so the game still has the last word on the display curve. 0 means the picture is untouched.");
                     ImGui::EndTabItem();
                 }
                 if (ImGui::BeginTabItem("Controls"))
@@ -543,7 +562,16 @@ namespace
                     a.nativeCommands != b.nativeCommands ||
                     a.watchWrites != b.watchWrites ||
                     a.fpsOverlay != b.fpsOverlay ||
-                    a.statsOverlay != b.statsOverlay;
+                    a.statsOverlay != b.statsOverlay ||
+                    // The grading pass. Left out the first time for the same
+                    // reason as the nine above: a slider that moves but whose
+                    // Apply never enables looks broken and is worse than a
+                    // setting that is honestly absent.
+                    a.sharpen != b.sharpen ||
+                    a.brightness != b.brightness ||
+                    a.contrast != b.contrast ||
+                    a.saturation != b.saturation ||
+                    a.temperature != b.temperature;
                 for (int i = 0; i < Settings::ActionCount; i++)
                     if (a.keys[i] != b.keys[i]) dirty = true;
             }

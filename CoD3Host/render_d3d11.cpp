@@ -19,6 +19,7 @@
 #include "render_stats.h"
 #include "overlay.h"
 #include "settings.h"
+#include "grading.h"
 #include "kernel.h"
 #include "gpu.h"
 
@@ -128,6 +129,8 @@ namespace
     ComPtr<ID3D11PixelShader> g_copyDepthMS[4];      // and of a depth target, its first sample
     ComPtr<ID3D11PixelShader> g_presentPixelShader;  // the frame, linear sampled
     ComPtr<ID3D11PixelShader> g_fxaaPixelShader;
+    ComPtr<ID3D11PixelShader> g_casPixelShader;
+    ComPtr<ID3D11PixelShader> g_presentPlainPixelShader;
     ComPtr<ID3D11PixelShader> g_flatPixelShader;
     ComPtr<ID3D11PixelShader> g_depthOnlyPixelShader;   // the depth only mode's draws (COD3_DEPTH24)
     ComPtr<ID3D11SamplerState> g_pointSampler, g_linearSampler;
@@ -135,6 +138,137 @@ namespace
     ComPtr<ID3D11Texture1D> g_gammaTexture;           // the display's colour table (Gpu::DisplayGamma)
     ComPtr<ID3D11ShaderResourceView> g_gammaView;
     uint64_t g_gammaVersion = ~0ull;
+
+    // The player's grading, as its own 256-entry table, kept separate from the
+    // display table so the title's own gamma keeps the last word on the
+    // display transform. Grading is applied BEFORE gamma, not after it.
+    ComPtr<ID3D11Texture1D> g_gradeTexture;
+    ComPtr<ID3D11ShaderResourceView> g_gradeView;
+    // A single opaque white texel, bound to t2 if the real table cannot be
+    // made. grade() then returns its input unchanged, which is the identity -
+    // so a failure costs the feature and not the picture. Binding nothing at
+    // t2 instead would sample zero and black out every frame.
+    ComPtr<ID3D11Texture1D> g_gradeFallbackTexture;
+    ComPtr<ID3D11ShaderResourceView> g_gradeFallbackView;
+    float g_gradeSeenContrast = -1.0f;
+    float g_gradeSeenTemperature = -1.0f, g_gradeSeenBrightness = -1.0f;
+
+    // Builds the grading table. The arithmetic is in grading.h rather than
+    // here, because the property that matters most about it - that the
+    // defaults are the identity - is checked there by scripts/selfcheck.ps1,
+    // and it can only be checked there if it is a function on its own.
+    //
+    // Saturation is absent from this and from the table it builds: it needs all
+    // three channels at once, and a table indexed per channel cannot have
+    // them. It travels in the draw constants instead.
+    void BuildGrading(const Settings::Values& s, uint32_t texels[256])
+    {
+        Grading::Build(s.brightness, s.contrast, s.temperature, texels);
+    }
+
+    ID3D11ShaderResourceView* GradeTable(const Settings::Values& settings)
+    {
+        if (!g_gradeTexture)
+        {
+            D3D11_TEXTURE1D_DESC desc{};
+            desc.Width = 256;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            // Eight bits per channel, matching what Grading::Build packs.
+            // See the note there: a 10-bit field decodes as n/1023 and would
+            // darken the whole picture by 4x.
+            desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            // Built from the settings actually in force, NOT from the identity.
+            //
+            // Settings are loaded before the first present, so for anyone who
+            // has ever saved a grade, creating this with the identity and then
+            // recording the current values as "already uploaded" left the
+            // identity table on screen permanently: the test below could never
+            // fire again. That is what it did.
+            uint32_t initial[256];
+            Grading::Build(settings.brightness, settings.contrast, settings.temperature, initial);
+            const D3D11_SUBRESOURCE_DATA data{ initial, 0, 0 };
+            if (FAILED(g_device->CreateTexture1D(&desc, &data, &g_gradeTexture)))
+            {
+                printf("render: the grading table could not be created; the picture is left alone\n");
+                fflush(stdout);
+                return nullptr;
+            }
+            // Checked. A null view here binds nothing to t2, grade() samples
+            // zero, and every pixel goes to gamma(0) - a black screen with no
+            // message, which is what a silent failure here looks like.
+            if (FAILED(g_device->CreateShaderResourceView(g_gradeTexture.Get(), nullptr, &g_gradeView)))
+            {
+                printf("render: the grading table could not be viewed; the picture is left ungraded\n");
+                fflush(stdout);
+                g_gradeTexture.Reset();
+                g_gradeView.Reset();
+            }
+            g_gradeSeenContrast = settings.contrast;
+            g_gradeSeenTemperature = settings.temperature;
+            g_gradeSeenBrightness = settings.brightness;
+        }
+
+        // No table, or no view of it. Fall back to a real identity table, NOT to a
+        // 1x1 white texel: grade() returns the sample verbatim, so a white
+        // texel means every pixel becomes white. That is a worse failure than
+        // the one this is guarding against, and the comment here used to claim
+        // the opposite.
+        if (!g_gradeView)
+        {
+            // Latched: a device that cannot make a 1x256 texture will not
+            // manage it on the next frame either, and retrying every frame for
+            // the rest of the session churns D3D objects continuously.
+            static bool gaveUp = false;
+            if (gaveUp) return nullptr;
+            if (!g_gradeFallbackTexture)
+            {
+                D3D11_TEXTURE1D_DESC d{};
+                d.Width = 256;
+                d.MipLevels = 1;
+                d.ArraySize = 1;
+                d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                d.Usage = D3D11_USAGE_DEFAULT;
+                d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                uint32_t identity[256];
+                Grading::Build(0.0f, 1.0f, 0.0f, identity);
+                const D3D11_SUBRESOURCE_DATA w{ identity, 0, 0 };
+                if (FAILED(g_device->CreateTexture1D(&d, &w, &g_gradeFallbackTexture)))
+                {
+                    printf("render: no grading table and no fallback; the picture is left alone\n");
+                    fflush(stdout);
+                    gaveUp = true;
+                    return nullptr;
+                }
+                if (FAILED(g_device->CreateShaderResourceView(g_gradeFallbackTexture.Get(), nullptr, &g_gradeFallbackView)))
+                {
+                    // Reset BOTH, or the guard above sees a texture next frame
+                    // and returns a null view forever, leaving t2 unbound.
+                    g_gradeFallbackTexture.Reset();
+                    g_gradeFallbackView.Reset();
+                    printf("render: the grading fallback could not be viewed; the picture is left alone\n");
+                    fflush(stdout);
+                    gaveUp = true;
+                    return nullptr;
+                }
+            }
+            return g_gradeFallbackView.Get();
+        }
+
+        if (settings.contrast != g_gradeSeenContrast ||
+            settings.temperature != g_gradeSeenTemperature || settings.brightness != g_gradeSeenBrightness)
+        {
+            uint32_t texels[256];
+            BuildGrading(settings, texels);
+            g_context->UpdateSubresource(g_gradeTexture.Get(), 0, nullptr, texels, 0, 0);
+            g_gradeSeenContrast = settings.contrast;
+            g_gradeSeenTemperature = settings.temperature;
+            g_gradeSeenBrightness = settings.brightness;
+        }
+        return g_gradeView.Get();
+    }
 
     // The console's rectangle list, three corners with the fourth implied,
     // as two triangles. The three can come in any order: the diagonal is
@@ -173,7 +307,110 @@ namespace
         "V vsmain(uint id : SV_VertexID) { V v; float2 t = float2((id << 1) & 2, id & 2);"
         " v.position = float4(t * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0); v.uv = uvRect.xy + t * uvRect.zw; return v; }\n"
         "float4 copy(V v) : SV_Target { return source.Sample(smp, v.uv); }\n"
-        "float4 present(V v) : SV_Target { return float4(gamma(source.Sample(smp, v.uv).rgb), 1.0); }\n"
+        // Colour grading, composed onto the title's own display table.
+        //
+        // Grading : register(t2) is a 256-entry LUT built on the CPU from the
+        // player's contrast, saturation, temperature and brightness. It is the
+        // identity unless they are changed, so with everything at its default
+        // this is exactly the old gamma path and the picture does not move.
+        //
+        // Graded before gamma rather than after, so the title's own table still
+        // has the last word on the display transform. Applying a lift after a
+        // gamma curve and then re-gamma-ing is where grading usually goes
+        // wrong.
+        "Texture1D graded : register(t2);\n"
+        // Saturation is applied here, not in the table, because it needs all
+        // three channels at once and the table is indexed per channel. At the
+        // default of 1.0 this is `l + (t - l)`, which is t exactly, so the
+        // whole pass is still the identity. scripts/selfcheck.ps1 checks that
+        // arithmetic for real; see CoD3Host/grading.h for why it cannot go in
+        // the table.
+        "float3 grade(float3 c) {\n"
+        "    float3 at = saturate(c) * (255.0 / 256.0) + (0.5 / 256.0);\n"
+        "    float3 t = float3(graded.SampleLevel(smp, at.r, 0).r, graded.SampleLevel(smp, at.g, 0).g, graded.SampleLevel(smp, at.b, 0).b);\n"
+        "    float l = dot(t, float3(0.299, 0.587, 0.114));\n"
+        // The default takes the branch, rather than relying on
+        // `l + (t - l) * 1.0` being exact.
+        //
+        // It is not. That add-back rounds, and for a good many 8-bit values
+        // `l + (t - l) * 1.0f != t` in IEEE arithmetic - the self-check found
+        // real cases while this was being written. A ternary makes the
+        // identity exact by construction instead of by argument, which is the
+        // only kind worth relying on for a claim this load bearing.
+        "    return (texel.w == 1.0) ? t : saturate(l + (t - l) * texel.w); }\n"
+        "float4 present(V v) : SV_Target { return float4(gamma(grade(source.Sample(smp, v.uv).rgb)), 1.0); }\n"
+        // The untouched case. This is what the present path did before grading
+        // existed, and it is selected whenever every control is at its default,
+        // so a player who never opens the Colour page pays for nothing: no
+        // second texture, no three extra samples a pixel, no dot product.
+        //
+        // "At its default" is decided on the host, by a comparison of the four
+        // settings against their defaults, so this stays correct even though the
+        // saturation identity is a branch inside grade() rather than arithmetic.
+        "float4 presentPlain(V v) : SV_Target { return float4(gamma(source.Sample(smp, v.uv).rgb), 1.0); }\n"
+        // Contrast-adaptive sharpening, in the shape AMD's CAS uses rather
+        // than its exact constants: sharpen against the local contrast, so a
+        // flat sky is not ringed and a detailed wall is not overcooked.
+        //
+        // What is NOT claimed here is bit-compatibility with any shipped CAS
+        // build. The coefficients below were chosen for this pass and have not
+        // been tuned against the real thing. The only hard guarantee is the
+        // one that matters most: at an amount of 0 this returns the centre
+        // pixel untouched, which is why the shader is simply not selected
+        // then.
+        //
+        // The 3x3 box is weighted 1-2-1 per axis (so 4 for the centre, 2 for
+        // the edge neighbours and 1 for the diagonals). That is what the eye
+        // reads as "blurrier", and comparing it against the centre is the
+        // whole signal.
+        "float4 cas(V v) : SV_Target {\n"
+        "    float2 uv = v.uv, px = texel.xy;\n"
+        "    float3 cM = source.Sample(smp, uv).rgb;\n"
+        "    float3 cN = source.Sample(smp, uv + float2(0.0, -px.y)).rgb;\n"
+        "    float3 cS = source.Sample(smp, uv + float2(0.0,  px.y)).rgb;\n"
+        "    float3 cE = source.Sample(smp, uv + float2( px.x, 0.0)).rgb;\n"
+        "    float3 cW = source.Sample(smp, uv + float2(-px.x, 0.0)).rgb;\n"
+        "    float3 cNW = source.Sample(smp, uv + float2(-px.x, -px.y)).rgb;\n"
+        "    float3 cNE = source.Sample(smp, uv + float2( px.x, -px.y)).rgb;\n"
+        "    float3 cSW = source.Sample(smp, uv + float2(-px.x,  px.y)).rgb;\n"
+        "    float3 cSE = source.Sample(smp, uv + float2( px.x,  px.y)).rgb;\n"
+        "    float3 mn = min(min(min(cN, cS), min(min(cE, cW), min(min(cNW, cNE), min(cSW, cSE)))), cM);\n"
+        "    float3 mx = max(max(max(cN, cS), max(max(cE, cW), max(max(cNW, cNE), max(cSW, cSE)))), cM);\n"
+        // Why this is contrast adaptive, without a contrast measurement:
+        //
+        // In a flat region the nine taps are equal, so the box IS the centre
+        // pixel, `box - cM` is zero, and nothing happens. The measurement is
+        // implicit in the box itself - there is no separate range to compute
+        // and no channel-by-channel strength, which is what would sharpen a
+        // saturated edge by a different amount per channel and fringe it.
+        //
+        // (An earlier version computed a scalar range from the luma of the
+        // local extremes and then divided by it, which cancelled out and left
+        // a flat constant.)
+        "    float3 box = (cM * 4.0 + (cN + cS + cE + cW) * 2.0 + (cNW + cNE + cSW + cSE)) * (1.0 / 16.0);\n"
+        // Sharpen by pushing away from the box.
+        //
+        // The bound on the overshoot is the clamp below, not an arithmetic
+        // argument. The box is a convex combination of the nine taps and cM
+        // lies within [mn, mx], so |box - cM| <= range and the deviation is at
+        // most `amount` times that. Multiplying by the range a second time, as
+        // an earlier version did, made a hard edge overshoot by up to four
+        // times full scale: it clipped and rang.
+        //
+        // In a flat region the range is 0, the box equals the centre, and the
+        // result is the centre pixel - which is what keeps a sky from being
+        // sharpened at all, and is the reason this is called contrast
+        // ADAPTIVE rather than just contrast weighted.
+        "    float3 sharpened = cM - (box - cM) * texel.z;\n"
+        // A sharper kernel should never invent a value the neighbourhood did
+        // not already contain. This is the guarantee rather than the hope, and
+        // it is per channel so a coloured edge keeps its colour.
+        "    sharpened = clamp(sharpened, mn, mx);\n"
+        // The grade is applied last, to the finished pixel. Doing it per tap
+        // would cost eight more table lookups and, worse, sharpen a graded
+        // centre against ungraded neighbours - the sharpening direction would
+        // be biased by the grade itself.
+        "    return float4(gamma(grade(sharpened)), 1.0); }\n"
         // FXAA 3.11, the quality path, on the presented picture: the edges
         // the title's own picture has, softened by the luma along them.
         "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
@@ -184,7 +421,7 @@ namespace
         "    float lW = luma(source.Sample(smp, uv + float2(-px.x, 0)).rgb), lE = luma(source.Sample(smp, uv + float2(px.x, 0)).rgb);\n"
         "    float lMin = min(lM, min(min(lN, lS), min(lW, lE))), lMax = max(lM, max(max(lN, lS), max(lW, lE)));\n"
         "    float range = lMax - lMin;\n"
-        "    if (range < max(0.0312, lMax * 0.125)) return float4(gamma(rgbM), 1.0);\n"
+        "    if (range < max(0.0312, lMax * 0.125)) return float4(gamma(grade(rgbM)), 1.0);\n"
         "    float lNW = luma(source.Sample(smp, uv + float2(-px.x, -px.y)).rgb), lNE = luma(source.Sample(smp, uv + float2(px.x, -px.y)).rgb);\n"
         "    float lSW = luma(source.Sample(smp, uv + float2(-px.x, px.y)).rgb), lSE = luma(source.Sample(smp, uv + float2(px.x, px.y)).rgb);\n"
         "    float lNS = lN + lS, lWE = lW + lE, lWc = lNW + lSW, lEc = lNE + lSE, lNc = lNW + lNE, lSc = lSW + lSE;\n"
@@ -218,7 +455,7 @@ namespace
         "    float subFinal = (-2.0 * sub + 3.0) * sub * sub; subFinal = subFinal * subFinal * 0.75;\n"
         "    finalOffset = max(finalOffset, subFinal);\n"
         "    float2 finalUv = uv; if (horizontal) finalUv.y += finalOffset * step; else finalUv.x += finalOffset * step;\n"
-        "    return float4(gamma(source.Sample(smp, finalUv).rgb), 1.0); }\n";
+        "    return float4(gamma(grade(source.Sample(smp, finalUv).rgb)), 1.0); }\n";
 
     // The copy of a multisampled target, which has no sampler: the texel
     // by position, a colour as the average of its samples, a depth as its
@@ -286,6 +523,10 @@ namespace
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_presentPixelShader);
         if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "fxaa", "ps_5_0", "anti aliasing program"))
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_fxaaPixelShader);
+        if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "presentPlain", "ps_5_0", "ungraded present program"))
+            g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_presentPlainPixelShader);
+        if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "cas", "ps_5_0", "contrast adaptive sharpening program"))
+            g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_casPixelShader);
         if (getenv("COD3_D3DFLAT") != nullptr)
             if (ComPtr<ID3DBlob> code = CompileBuiltIn(FlatSource, "main", "ps_5_0", "flat program"))
                 g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_flatPixelShader);
@@ -303,6 +544,9 @@ namespace
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_device->CreateBuffer(&desc, nullptr, &g_quadConstants);
+        // CAS is deliberately NOT in this list. Without it the sharpening
+        // setting simply does nothing, rather than the present path failing
+        // for everyone over a feature that defaults to off.
         return g_quadVertexShader && g_copyPixelShader && g_presentPixelShader;
     }
 
@@ -311,11 +555,17 @@ namespace
     void DrawQuad(ID3D11ShaderResourceView* source, uint32_t sourceWidth, uint32_t sourceHeight,
                   float x0, float y0, float width, float height,
                   ID3D11RenderTargetView* target, const D3D11_VIEWPORT& viewport,
-                  ID3D11PixelShader* program, ID3D11SamplerState* sampler, ID3D11ShaderResourceView* second = nullptr)
+                  ID3D11PixelShader* program, ID3D11SamplerState* sampler, ID3D11ShaderResourceView* second = nullptr,
+                   ID3D11ShaderResourceView* third = nullptr, float sharpenAmount = 0.0f,
+                   float saturationAmount = 1.0f)
     {
         if (!BuiltInPrograms()) return;
+        // constants[6] and constants[7] carry the sharpening amount and the
+        // saturation. Both were otherwise unused, which is why this rides in
+        // the constants already there rather than needing a second buffer for
+        // two floats.
         const float constants[8] = { x0 / sourceWidth, y0 / sourceHeight, width / sourceWidth, height / sourceHeight,
-                                     1.0f / sourceWidth, 1.0f / sourceHeight, 0.0f, 0.0f };
+                                     1.0f / sourceWidth, 1.0f / sourceHeight, sharpenAmount, saturationAmount };
         g_context->UpdateSubresource(g_quadConstants.Get(), 0, nullptr, constants, 0, 0);
         // Every texture the draws had bound goes, so the target is not
         // among them and the bindings forgotten below are truly gone.
@@ -334,8 +584,8 @@ namespace
         ID3D11Buffer* buffers[1] = { g_quadConstants.Get() };
         g_context->VSSetConstantBuffers(0, 1, buffers);
         g_context->PSSetConstantBuffers(0, 1, buffers);
-        ID3D11ShaderResourceView* sources[2] = { source, second };
-        g_context->PSSetShaderResources(0, 2, sources);
+        ID3D11ShaderResourceView* sources[3] = { source, second, third };
+        g_context->PSSetShaderResources(0, 3, sources);
         ID3D11SamplerState* samplers[1] = { sampler };
         g_context->PSSetSamplers(0, 1, samplers);
         g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1171,8 +1421,42 @@ namespace
             // and writes into the picture's rectangle: the frame is the
             // chosen resolution, so its rows are the window's, and it has
             // no black either side to bleed a dark rim into the edges.
+            // CAS is a separate program from FXAA rather than combined with it: both
+            // work on edges, and running one after the other is how sharpening
+            // turns into ringing. FXAA wins when both are asked for, because a
+            // player who selected FXAA asked for softening and CAS for
+            // sharpening, and neither of them should silently lose to the
+            // other's half-measure.
+            // With every control at its default the whole pass is the identity,
+            // so the cheap program that has no grading in it at all is used
+            // instead. This is the common case and it should cost nothing.
+            const bool graded = settings.contrast != 1.0f || settings.saturation != 1.0f ||
+                                settings.temperature != 0.0f || settings.brightness != 0.0f;
+            const bool cas = settings.sharpen > 0.0f && g_casPixelShader;
+            ID3D11PixelShader* program = g_presentPixelShader.Get();
+            if (cas) program = g_casPixelShader.Get();
+            else if (fxaa) program = g_fxaaPixelShader.Get();
+            else if (!graded && g_presentPlainPixelShader) program = g_presentPlainPixelShader.Get();
+            // Said out loud, once, because the alternative is a player who had
+            // FXAA selected dragging the sharpen slider and losing their
+            // anti-aliasing with nothing on screen to say so. Both work on
+            // edges in opposite directions; running them in sequence is how
+            // sharpening turns into ringing.
+            if (cas && fxaa)
+            {
+                static bool warned = false;
+                if (!warned)
+                {
+                    printf("render: sharpening is on, so it has replaced FXAA; "
+                           "they work on edges in opposite directions\n");
+                    fflush(stdout);
+                    warned = true;
+                }
+            }
+
             DrawQuad(frame->resource, frame->width, frame->height, 0, 0, float(frame->width), float(frame->height),
-                     g_backView.Get(), viewport, fxaa ? g_fxaaPixelShader.Get() : g_presentPixelShader.Get(), g_linearSampler.Get(), GammaTable());
+                     g_backView.Get(), viewport, program, g_linearSampler.Get(),
+                     GammaTable(), GradeTable(settings), settings.sharpen, settings.saturation);
         }
         // The menu, the counters and the screenshot key, over the picture.
         Overlay::Initialize(g_swapChainWindow, g_device.Get(), g_context.Get());

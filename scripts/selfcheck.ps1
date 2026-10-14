@@ -176,6 +176,89 @@ int main() {
         if ($LASTEXITCODE -eq 0) { Pass 'the .xex suffix test and the sensitivity gain, run against the header the host uses' }
         else { Fail 'the shared logic is wrong' ($logicOut -join '; ') }
     }
+
+    # The grading table's texture FORMAT.
+    #
+    # This is a separate check from the one below, and it exists because of a
+    # defect that got through: the table was created as R10G10B10A2_UNORM while
+    # being packed with 8-bit values. A UNORM sample decodes as n/(2^bits-1), so
+    # every pixel was scaled by 255/1023 and the whole game rendered four times
+    # too dark - while the packing, the CPU-side decode and the identity test
+    # all remained self-consistent and green.
+    #
+    # Nothing in grading.h can catch that on its own, because grading.h never
+    # mentions a texture format. The format lives in render_d3d11.cpp, so the
+    # format is checked here, against the same constant the decode derives
+    # from.
+    $gradeH = Get-Content (Join-Path $Src 'grading.h') -Raw
+    if ($gradeH -notmatch 'kBitsPerChannel\s*=\s*(\d+)') {
+        Fail 'the grading format is not pinned' 'grading.h does not declare kBitsPerChannel'
+    } else {
+        $bits = [int]$Matches[1]
+        $expectedName = "R${bits}G${bits}B${bits}A${bits}"
+        $expectedFormat = "DXGI_FORMAT_${expectedName}_UNORM"
+        # The grade table's descriptor, and nothing else's. Isolate the
+        # GradeTable function so the display table - which is legitimately
+        # 10-bit and expands on the way in - is not mistaken for it.
+        $renderSrc = Get-Content (Join-Path $Src 'render_d3d11.cpp') -Raw
+        $start = $renderSrc.IndexOf('ID3D11ShaderResourceView* GradeTable(')
+        $end = $renderSrc.IndexOf('void DrawQuad(', $start)
+        if ($start -lt 0 -or $end -lt 0) {
+            Fail 'the grading format is not pinned' 'could not find GradeTable in render_d3d11.cpp'
+        } else {
+            $gradeFn = $renderSrc.Substring($start, $end - $start)
+            $found = [regex]::Match($gradeFn, 'DXGI_FORMAT_(\w+?)_UNORM').Groups[1].Value
+            if ($found -ne $expectedName) {
+                # Say what it actually costs. A UNORM sample decodes as
+                # n / (2^bits - 1), so a table packed at $bits bits and read
+                # at whatever the format says is scaled by that ratio, at
+                # every setting including the identity.
+                # The channel depth is the number after R - not the trailing digits, which
+                # for R10G10B10A2 is the alpha's "2" and gives a nonsense ratio.
+                $readBits = if ($found -match '^R(\d+)') { [int]$Matches[1] } else { 0 }
+                $ratio = if ($readBits -gt 0) { [math]::Round(((1 -shl $bits) - 1) / ((1 -shl $readBits) - 1), 4) } else { 0 }
+                Fail 'the grading table is the wrong format' "grading.h packs $bits bits per channel, but GradeTable creates DXGI_FORMAT_${found}_UNORM (expected $expectedFormat). A UNORM sample decodes as n/(2^bits-1), so every pixel is scaled by $ratio even with every control at its default."
+            } else {
+                Pass "the grading table is created as $expectedFormat, matching its packing and decode"
+            }
+        }
+    }
+
+    # The colour grading pass claims its defaults are the identity, so that a
+    # player who never opens the Colour page gets a bit-identical picture.
+    # That claim is the whole safety argument for the feature and it cannot be
+    # checked by reading the code, because a rounding change two steps deep
+    # still reads as obviously correct.
+    #
+    # So it is compiled and run, against CoD3Host/grading.h - the header the
+    # host itself includes, not a paraphrase of it. The test file is a real
+    # file in the repository rather than a here-string, precisely because the
+    # earlier logic check pasted a paraphrase and therefore reported a reverted
+    # bug as covered.
+    $gradeCpp = Join-Path $Root 'scripts\grading_identity.cpp'
+    $gradeExe = Join-Path $tmp 'grading_identity.exe'
+    if (-not (Test-Path -LiteralPath $gradeCpp)) {
+        Fail 'the grading identity could not be run' "the test file is missing: $gradeCpp"
+    } else {
+        $gDiags = Join-Path $tmp 'grading_compile.txt'
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $clang /nologo /std:c++17 "/Fe:$gradeExe" "/I$Src" $gradeCpp /link /nologo 2> $gDiags 1> $null
+        } finally {
+            $ErrorActionPreference = $previous
+        }
+        if (-not (Test-Path -LiteralPath $gradeExe)) {
+            $why = if (Test-Path -LiteralPath $gDiags) {
+                ((Get-Content $gDiags -Raw).Trim() -split "`n" | Select-Object -First 2) -join ' '
+            } else { 'no compiler output' }
+            Fail 'the grading identity could not be run' ("it did not compile, so the check was SKIPPED, not passed: $why")
+        } else {
+            $gradeOut = & $gradeExe 2>&1
+            if ($LASTEXITCODE -eq 0) { Pass 'the grading defaults are the identity as the GPU reads them, and every control does something' }
+            else { Fail 'the grading pass is not the identity' ($gradeOut -join '; ') }
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -401,14 +484,14 @@ if ($Game) {
         $log = Join-Path $run 'CoD3.log'
         Remove-Item $log -Force -ErrorAction SilentlyContinue
         $gamePath = Join-Path $Root 'build\CoD3Host\game.path'
-        $game = if (Test-Path $gamePath) { (Get-Content $gamePath -Raw).Trim() } else { '' }
-        if ($game -eq '' -or -not (Test-Path (Join-Path $game 'default.xex'))) {
+        $gameRoot = if (Test-Path $gamePath) { (Get-Content $gamePath -Raw).Trim() } else { '' }
+        if ($gameRoot -eq '' -or -not (Test-Path (Join-Path $gameRoot 'default.xex'))) {
             Fail 'the game check' 'the game is not installed, or game.path does not name it'
         } else {
             $env:COD3_LOG = 'always'
             $env:COD3_NOFILMS = '1'
             Remove-Item Env:COD3_MAP, Env:COD3_CMD, Env:COD3_PAD, Env:COD3_XEX -ErrorAction SilentlyContinue
-            $proc = Start-Process -FilePath $exe -ArgumentList '--game', "`"$game`"" -WorkingDirectory $run -PassThru
+            $proc = Start-Process -FilePath $exe -ArgumentList '--game', "`"$gameRoot`"" -WorkingDirectory $run -PassThru
             Start-Sleep -Seconds 75
             $running = [bool](Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)
             if (-not $running) {

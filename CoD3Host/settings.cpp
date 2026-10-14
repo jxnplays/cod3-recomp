@@ -161,6 +161,11 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
             else if (key == "controller") v.controller = atoi(value.c_str()) != 0;
         else if (key == "aspect_mode") v.aspectMode = atoi(value.c_str());
         else if (key == "control_layout") v.controlLayout = atoi(value.c_str());
+        else if (key == "contrast") v.contrast = float(atof(value.c_str()));
+        else if (key == "saturation") v.saturation = float(atof(value.c_str()));
+        else if (key == "temperature") v.temperature = float(atof(value.c_str()));
+        else if (key == "brightness") v.brightness = float(atof(value.c_str()));
+        else if (key == "sharpen") v.sharpen = float(atof(value.c_str()));
         else if (key == "playstation_prompts") v.playstationPrompts = atoi(value.c_str()) != 0;
             else if (key == "mouse_sensitivity") v.mouseSensitivity = float(atof(value.c_str()));
             else if (key == "raw_mouse") v.rawMouse = atoi(value.c_str()) != 0;
@@ -194,6 +199,14 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     // range has to be corrected here rather than trusted.
     if (v.controlLayout < 0 || v.controlLayout > 3) v.controlLayout = 0;
     if (v.aspectMode < 0 || v.aspectMode > 1) v.aspectMode = 0;
+    // Grading ranges. The identity has to survive a round trip through the
+    // ini exactly, so 1.0 and 0.0 are inside these and not clamped to a
+    // neighbouring value.
+    if (!(v.contrast >= 0.5f && v.contrast <= 2.0f)) v.contrast = 1.0f;
+    if (!(v.saturation >= 0.0f && v.saturation <= 2.0f)) v.saturation = 1.0f;
+    if (!(v.temperature >= -10.0f && v.temperature <= 10.0f)) v.temperature = 0.0f;
+    if (!(v.brightness >= -0.5f && v.brightness <= 0.5f)) v.brightness = 0.0f;
+    if (!(v.sharpen >= 0.0f && v.sharpen <= 1.0f)) v.sharpen = 0.0f;
     // A checkbox: anything but 0 is "on", so there is no range to check.
     std::lock_guard<std::mutex> lock(g_mutex);
     g_values = v;
@@ -209,9 +222,10 @@ void Settings::Save()
         char resolution[32];
         if (v.resolutionWidth > 0 && v.resolutionHeight > 0) snprintf(resolution, sizeof(resolution), "%dx%d", v.resolutionWidth, v.resolutionHeight);
         else snprintf(resolution, sizeof(resolution), "desktop");
-        fprintf(file, "[graphics]\nrenderer = %d\nresolution = %s\nresolution_scale = %d\ntexture_filter = %d\nanisotropy = %d\nvsync = %d\naspect_mode = %d\nunlock_frame_rate = %d\nantialiasing = %d\ntexture_quality = %d\nfov = %d\nmodel_detail = %d\naim_blur = %d\nconsole_depth = %d\nnative_commands = %d\nwatch_writes = %d\nwindow_mode = %d\nfps_overlay = %d\nstats_overlay = %d\n",
-            v.renderer, resolution, v.resolutionScale, v.textureFilter, v.anisotropy, v.vsync ? 1 : 0, v.aspectMode, v.unlockFrameRate ? 1 : 0, v.antialiasing, v.textureQuality, v.fov, v.modelDetail, v.aimBlur ? 1 : 0, v.consoleDepth ? 1 : 0, v.nativeCommands ? 1 : 0, v.watchWrites ? 1 : 0, v.windowMode, v.fpsOverlay ? 1 : 0, v.statsOverlay ? 1 : 0);
-        fprintf(file, "[game]\naim_assist = %d\ncontroller = %d\ncontrol_layout = %d\nplaystation_prompts = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.controller ? 1 : 0, v.controlLayout,
+        fprintf(file, "[graphics]\nrenderer = %d\nresolution = %s\nresolution_scale = %d\ntexture_filter = %d\nanisotropy = %d\nvsync = %d\naspect_mode = %d\nunlock_frame_rate = %d\nantialiasing = %d\ntexture_quality = %d\nfov = %d\nmodel_detail = %d\naim_blur = %d\nconsole_depth = %d\nnative_commands = %d\nwatch_writes = %d\nwindow_mode = %d\nfps_overlay = %d\nstats_overlay = %d\ncontrast = %.3f\nsaturation = %.3f\ntemperature = %.3f\nbrightness = %.3f\nsharpen = %.3f\n",
+            v.renderer, resolution, v.resolutionScale, v.textureFilter, v.anisotropy, v.vsync ? 1 : 0, v.aspectMode, v.unlockFrameRate ? 1 : 0, v.antialiasing, v.textureQuality, v.fov, v.modelDetail, v.aimBlur ? 1 : 0, v.consoleDepth ? 1 : 0, v.nativeCommands ? 1 : 0, v.watchWrites ? 1 : 0, v.windowMode, v.fpsOverlay ? 1 : 0, v.statsOverlay ? 1 : 0,
+        v.contrast, v.saturation, v.temperature, v.brightness, v.sharpen);
+            fprintf(file, "[game]\naim_assist = %d\ncontroller = %d\ncontrol_layout = %d\nplaystation_prompts = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.controller ? 1 : 0, v.controlLayout,
         v.playstationPrompts ? 1 : 0, v.mouseSensitivity, v.rawMouse ? 1 : 0);
         fprintf(file, "[keys]\n");
         for (int i = 0; i < ActionCount; i++) fprintf(file, "key_%s = %d\n", ActionKeys[i], v.keys[i]);
