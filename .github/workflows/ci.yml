@@ -167,13 +167,25 @@ jobs:
   # XenonRecomp's output and need the player's own default.xex. Building it
   # would mean shipping or synthesising game code, which this repository does
   # not do. What can be checked without game data is checked here.
+  # XenosDis, which builds on its own with no game data and no submodule.
+  #
+  # PpcAsm and CoD3Scan are deliberately NOT here. Both are wired into the
+  # root CMakeLists as subdirectories, so building them means configuring that
+  # project, which stops at "No recompiled sources in ppc/ - run
+  # scripts/recompile.ps1 first" because the recompiled output needs the
+  # player's own default.xex. PpcAsm additionally includes XenonUtils'
+  # headers for byteswap.h and so needs that library's include path when
+  # configured on its own.
+  #
+  # That is a real limit, not a preference, and it is written down here so the
+  # gap is visible rather than rediscovered. Both are covered by a local
+  # build; what CI gained is that the part of tools/ that can be checked
+  # without game data now is.
   analysis_tools:
     name: Analysis tools build
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
 
       - name: Pin LLVM
         shell: pwsh
@@ -182,65 +194,17 @@ jobs:
           if (-not (Test-Path 'C:\Program Files\LLVM\bin\clang-cl.exe')) { throw "clang-cl not found after install" }
           clang-cl --version
 
-      - name: Locate Visual Studio, CMake and Ninja
-        id: env
-        shell: pwsh
-        run: |
-          # Each root is searched literally rather than through one wildcard
-          # pattern like 'C:\Program Files*\...', which silently finds nothing
-          # on a machine where Visual Studio is under "Program Files (x86)":
-          # the * matches the directory name including its brackets, and
-          # PowerShell then reads "(x86)" as grouping syntax rather than as
-          # part of the name. It worked on the runner only because that runner
-          # has Visual Studio under "Program Files" with no brackets.
-          #
-          # Searching each known root with -LiteralPath and recursing covers
-          # both layouts, and cannot be broken by a directory whose name
-          # contains wildcard characters.
-          $vcvars = @()
-          foreach ($root in @(
-              (Join-Path $env:ProgramFiles 'Microsoft Visual Studio'),
-              (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio'))) {
-            if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
-            $vcvars = @(Get-ChildItem -LiteralPath $root -Filter 'vcvars64.bat' -Recurse -File -ErrorAction SilentlyContinue)
-            if ($vcvars.Count -gt 0) { break }
-          }
-          $vcvars = $vcvars | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $vcvars) { throw 'vcvars64.bat not found under Program Files or Program Files (x86)' }
-          Write-Host "vcvars: $vcvars"
-          "vcvars=$vcvars" >> $env:GITHUB_OUTPUT
-
-          # CMake and Ninja come from the Visual Studio that was actually
-          # found, rather than being searched for separately and possibly
-          # landing somewhere else.
-          $vsRoot = Split-Path (Split-Path (Split-Path (Split-Path $vcvars)))
-          $cmake = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
-          $ninja = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
-          if (Test-Path -LiteralPath (Join-Path $cmake 'cmake.exe')) { "cmake_dir=$cmake" >> $env:GITHUB_OUTPUT }
-          else { Write-Host 'cmake not inside Visual Studio; will use PATH' }
-          if (Test-Path -LiteralPath (Join-Path $ninja 'ninja.exe')) { "ninja_dir=$ninja" >> $env:GITHUB_OUTPUT }
-          else { Write-Host 'ninja not inside Visual Studio; will use PATH' }
-
-      - name: Build PpcAsm and XenosDis
+      - name: Build XenosDis
         shell: pwsh
         env:
-          VCVARS: ${{ steps.env.outputs.vcvars }}
           CMAKE_DIR: ${{ steps.env.outputs.cmake_dir }}
-          NINJA_DIR: ${{ steps.env.outputs.ninja_dir }}
         run: |
           $parts = @('C:\Program Files\LLVM\bin')
           if ($env:CMAKE_DIR) { $parts += $env:CMAKE_DIR }
-          if ($env:NINJA_DIR) { $parts += $env:NINJA_DIR }
           $env:PATH = ($parts -join ';') + ';' + $env:PATH
 
-          # The root project also pulls in the recompiled library, which is
-          # not built here; asking for the two named targets is what keeps it
-          # out of the way.
-          $inner = "cmake -S . -B build-tools -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl && cmake --build build-tools --target PpcAsm XenosDis --parallel 2"
-          & cmd /c "`"$($env:VCVARS)`" >nul 2>&1 && $inner"
-          if ($LASTEXITCODE -ne 0) { throw "the analysis tools failed to build (exit $LASTEXITCODE)" }
-
-          foreach ($exe in @('build-tools/PpcAsm/PpcAsm.exe', 'build-tools/XenosDis/XenosDis.exe')) {
-            if (-not (Test-Path $exe)) { throw "$exe was not produced" }
-            Write-Host "$exe built"
-          }
+          $inner = "cmake -S tools/XenosDis -B build-xenosdis -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang-cl && cmake --build build-xenosdis --parallel 2"
+          & cmd /c $inner
+          if ($LASTEXITCODE -ne 0) { throw "XenosDis failed to build (exit $LASTEXITCODE)" }
+          if (-not (Test-Path 'build-xenosdis/XenosDis.exe')) { throw 'XenosDis.exe was not produced' }
+          Write-Host 'XenosDis built'
