@@ -9,6 +9,7 @@
 // handles as a normal case rather than an error.
 
 #include "kernel.h"
+#include "logic.h"   // HostLogic::IsBootableXex - the relaunch decision
 #include "log.h"
 #include "sampler.h"
 #include <atomic>
@@ -922,20 +923,23 @@ PPC_FUNC(__imp__XamLoaderLaunchTitle)
     // The dashboard is still refused: a title asking for that has usually just
     // decided something is fatally wrong, and the call chain says what. There
     // is no dashboard to go to here.
-    std::string lower(path);
-    for (char& c : lower) c = char(tolower(static_cast<unsigned char>(c)));
     const bool isDashboard = path[0] == 0;
     const char* bootAs = path;   // the name handed to the next process
-    // The suffix is 4 characters, ".xex". This said 11 - left over from the
-    // "default.xex" test it replaced - while comparing against ".xex", so
-    // it compared the last 11 characters against a 4-character string and
-    // could never match. The multiplayer relaunch was therefore still
-    // refused, and the first test of this fix failed exactly as the bug
-    // did. The length and the offset have to be the suffix's length.
-    const std::string_view suffix = ".xex";
-    const bool wantsAnotherTitle =
-        lower.size() >= suffix.size() &&
-        lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) == 0;
+    // The shared predicate in logic.h, which scripts/selfcheck.ps1 compiles
+    // and runs.
+    //
+    // This site is where the bug lived: the test used to compare 11
+    // characters against the 4-character string ".xex", left over from the
+    // "default.xex" test it replaced, so it could never match and every
+    // relaunch was refused - including the next-mission one that had always
+    // worked.
+    //
+    // It used to be a copy of the logic, here and in installer.cpp. Two copies
+    // is what made it survivable: logic.h was introduced to hold one, but only
+    // one of the two call sites was migrated, and review proved the bug could
+    // be reintroduced here verbatim with every check still passing. Both sites
+    // call the one function now.
+    const bool wantsAnotherTitle = HostLogic::IsBootableXex(path);
     if (wantsAnotherTitle && !isDashboard)
     {
         if (Relaunch(bootAs))

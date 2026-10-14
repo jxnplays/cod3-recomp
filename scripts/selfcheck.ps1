@@ -150,9 +150,27 @@ int main() {
 }
 '@
     [IO.File]::WriteAllText($cpp, $body)
-    & $clang /nologo /std:c++17 "/Fe:$outExe" "/I$Src" $cpp /link /nologo 2>&1 | Out-Null
+
+    # stderr goes to a file, never into a 2>&1 pipeline. With
+    # $ErrorActionPreference='Stop', a native command writing to stderr inside
+    # such a pipeline raises a terminating NativeCommandError - which killed the
+    # whole run on a compiler *warning*, before the failure paths, with no
+    # summary and a stale green verdict left on disk. That is the same defect as
+    # the memory guard in docs/MEMORY.md: a check that cannot report its own
+    # failure while claiming to.
+    $diags = Join-Path $tmp 'compile.txt'
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $clang /nologo /std:c++17 "/Fe:$outExe" "/I$Src" $cpp /link /nologo 2> $diags 1> $null
+    } finally {
+        $ErrorActionPreference = $previous
+    }
     if (-not (Test-Path -LiteralPath $outExe)) {
-        Fail 'the shared logic could not be run' 'it did not compile, so the compiled checks were SKIPPED, not passed'
+        $why = if (Test-Path -LiteralPath $diags) {
+            ((Get-Content $diags -Raw).Trim() -split "`n" | Select-Object -First 2) -join ' '
+        } else { 'no compiler output' }
+        Fail 'the shared logic could not be run' ("it did not compile, so the compiled checks were SKIPPED, not passed: $why")
     } else {
         $logicOut = & $outExe 2>&1
         if ($LASTEXITCODE -eq 0) { Pass 'the .xex suffix test and the sensitivity gain, run against the header the host uses' }
@@ -174,9 +192,15 @@ $edited = [regex]::Matches($overlay, 'g_edit\.(\w+)') |
 $compared = [regex]::Matches($overlay, 'a\.(\w+) != b\.\1(?!\w)') |
             ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
 $missing = @($edited | Where-Object { $_ -notin $compared -and $_ -ne 'keys' })
-if ($missing.Count -eq 0) {
-    Pass "Apply compares all $($edited.Count) fields the menu edits"
-} else {
+# The keys are compared by a loop rather than by name, so they are not in the
+    # list above. That loop is checked on its own: excluding it silently is how
+    # seventeen keybinds could stop being compared while the check stayed green.
+    $keysLoop = [bool]($overlay -match 'for \(int i = 0; i < Settings::ActionCount; i\+\+\)')
+    if (-not $keysLoop) {
+        Fail 'Apply drops key bindings' 'the loop that compares the key array is gone'
+    } elseif ($missing.Count -eq 0) {
+        Pass "Apply compares all $($edited.Count) named fields the menu edits, and the key array by loop"
+    } else {
     Fail 'Apply drops settings' ("not in the dirty check: " + ($missing -join ', ') +
         " - drag one and Apply stays greyed out and the edit is discarded")
 }
@@ -228,9 +252,10 @@ foreach ($m in $fprintf) {
     $rest = $m.Groups[2].Value
     $specs = ([regex]::Matches($fmt, '%[-+ #0-9.]*(d|s|f|lu|llu|zu)')).Count
     # arguments are the comma-separated names after the string literal
-    $args = ($rest -split ',') | Where-Object { $_ -match '\b(v\.|resolution|ActionKeys|i\b)' }
-    if ($specs -gt 0 -and $args.Count -lt $specs) {
-        $bad += "$specs conversion(s) but $($args.Count) argument(s)"
+    # $argv, not $args: the latter is a PowerShell automatic variable.
+    $argv = ($rest -split ',') | Where-Object { $_ -match '\b(v\.|resolution|ActionKeys|i\b)' }
+    if ($specs -gt 0 -and $argv.Count -lt $specs) {
+        $bad += "$specs conversion(s) but $($argv.Count) argument(s)"
     }
 }
 if ($bad.Count -eq 0) {
@@ -325,12 +350,32 @@ if (-not $SkipBuild) {
     } else {
         $cmakeDir = Join-Path (Split-Path (Split-Path (Split-Path (Split-Path $bt)))) 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
         $ninjaDir = Join-Path (Split-Path (Split-Path (Split-Path (Split-Path $bt)))) 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
-        $inner = 'cmake --build build --parallel 3 --target CoD3'
-        $out = cmd /c "`"$bt`" >nul 2>&1 && set PATH=C:\PROGRA~1\LLVM\bin;$cmakeDir;$ninjaDir;%PATH% && $inner" 2>&1
-        if ($LASTEXITCODE -eq 0) { Pass 'the host builds' }
+        # Absolute, because a relative "build" broke from any other working directory.
+        # cmd's stderr goes to a file rather than a 2>&1 pipeline: with
+        # $ErrorActionPreference='Stop' a native command writing to stderr
+        # inside such a pipeline raises a terminating error, which killed the
+        # whole run on a compiler warning.
+        $buildDir = Join-Path $Root 'build'
+        $buildLog = Join-Path ([IO.Path]::GetTempPath()) 'cod3_selfcheck_build.txt'
+        $llvmBin = if ($clang) { Split-Path -Parent $clang } else { '' }
+        $pathParts = @(@($llvmBin, $cmakeDir, $ninjaDir) | Where-Object { $_ }) -join ';'
+        $inner = "cmake --build `"$buildDir`" --parallel 3 --target CoD3"
+        $previous2 = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            cmd /c "`"$bt`" >nul 2>&1 && set PATH=$pathParts;%PATH% && $inner" 2> $buildLog 1> $null
+            $buildExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previous2
+        }
+        if ($buildExit -eq 0) { Pass 'the host builds' }
         else {
-            $first = ($out | Select-String -Pattern 'error' | Select-Object -First 3) -join ' | '
-            Fail 'the host does not build' "$first"
+            $why = ''
+            if (Test-Path -LiteralPath $buildLog) {
+                $why = ((Get-Content $buildLog | Select-String -Pattern 'error' | Select-Object -First 2) -join ' | ')
+            }
+            if (-not $why) { $why = 'no error line in the build output' }
+            Fail 'the host does not build' $why
         }
     }
 }
@@ -377,7 +422,7 @@ if ($Game) {
             if ($faults -eq 0) { Pass 'the client ran with no guest fault' }
             else { Fail 'the client took a guest fault' "$faults fault lines" }
             if ($ps2 -eq 1) { Pass 'the ps2 command went out exactly once' }
-            else { Fail 'ps2 was sent $ps2 times, expected once' }
+            else { Fail 'ps2 was sent the wrong number of times' ("got $ps2, expected 1") }
         }
     }
 }

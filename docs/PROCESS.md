@@ -87,7 +87,7 @@ that went wrong:
 | check | what it stops | proven? |
 |---|---|---|
 | `logic.h` compiled and run: the `.xex` suffix test and the sensitivity gain | a relaunch that can never match; a curve that changes the range it was not meant to | yes - reverting either bug was tested and the check fails |
-| every `g_edit` field is in the dirty check | Apply discarding a setting | yes - deleting a comparison was tested and the check fails |
+| every `g_edit` field is in the dirty check | Apply discarding a setting | yes - deleting a named comparison, and deleting the key-array loop, were both tested and the check fails |
 | the 16:9 floor on the present path | a stretched picture on taller windows | pattern match only |
 | one `Render::VideoMode`, no hardcoded 1280 | the three mode reporters drifting | counts calls; it does **not** prove each reporter is right |
 | `fprintf` conversions against arguments | undefined behaviour from a half-edited format | catches too few; misses extra arguments, and misses a format split across adjacent literals |
@@ -96,9 +96,10 @@ that went wrong:
 | `ps2` sent once | hundreds of commands a second on the title's buffer | pattern match only |
 | no doc claims a feature works | the specific false claim that was made | **one exact sentence.** Any rewording sails through. It is a tripwire, not a detector |
 | every relative doc link resolves | a link to something deleted | only `.md`, `.png` and `.txt` |
+| the host builds | a change that does not compile | absolute path and a literal Visual Studio root; a compiler warning is survived, a hard error fails the run and deletes the verdict |
 
-The "proven?" column is the honest one. Four of these were tested by reverting
-the bug they name and confirming the check went red. The rest are pattern
+The "proven?" column is the honest one. Five of these have been tested by reverting the bug they name and confirming
+the check went red; the rest are pattern matches, and the column says which. The rest are pattern
 matches, which is weaker, and saying so is the point - a check presented as
 coverage it does not have is the thing that made the first version of this
 package worse than nothing.
@@ -123,6 +124,20 @@ worse than no check, because it reports a regression as covered.
 So: when a check is added, revert the thing it guards and confirm it goes red.
 `CoD3Host/logic.h` exists for this reason - the host and the check compile the
 same header, so there is no copy to drift.
+
+And check *every* call site, not the obvious one. `logic.h` was introduced and
+`installer.cpp` was migrated to it, and the check went green - while
+`kernel_xam.cpp`, which is where the relaunch decision actually lives and
+therefore where the bug was, still held its own copy. Reintroducing the exact
+eleven-character bug there passed every check. Both call the one function now.
+
+A second lesson from the same review: the script had
+`$ErrorActionPreference = 'Stop'` alongside `& $clang ... 2>&1`, which makes a
+native command writing to *stderr* throw. A compiler **warning** killed the run
+before the failure paths, there was no summary, and a stale green
+`.git/SELFCHECK` survived on disk - a check that could not report its own
+failure while claiming to. Diagnostics now go to a file, and a hard error was
+tested to fail the run, print the reason, and delete the verdict.
 
 ## The three things a check cannot do
 
