@@ -363,6 +363,7 @@ namespace
         // the edge neighbours and 1 for the diagonals). That is what the eye
         // reads as "blurrier", and comparing it against the centre is the
         // whole signal.
+        "float3 casLuma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
         "float4 cas(V v) : SV_Target {\n"
         "    float2 uv = v.uv, px = texel.xy;\n"
         "    float3 cM = source.Sample(smp, uv).rgb;\n"
@@ -376,41 +377,43 @@ namespace
         "    float3 cSE = source.Sample(smp, uv + float2( px.x,  px.y)).rgb;\n"
         "    float3 mn = min(min(min(cN, cS), min(min(cE, cW), min(min(cNW, cNE), min(cSW, cSE)))), cM);\n"
         "    float3 mx = max(max(max(cN, cS), max(max(cE, cW), max(max(cNW, cNE), max(cSW, cSE)))), cM);\n"
-        // Why this is contrast adaptive, without a contrast measurement:
+        // Why the earlier version did nothing.
         //
-        // In a flat region the nine taps are equal, so the box IS the centre
-        // pixel, `box - cM` is zero, and nothing happens. The measurement is
-        // implicit in the box itself - there is no separate range to compute
-        // and no channel-by-channel strength, which is what would sharpen a
-        // saturated edge by a different amount per channel and fringe it.
+        // It computed `cM - (box - cM) * amount` and then clamped the result
+        // to [mn, mx]. But mn and mx are the extremes of a neighbourhood that
+        // INCLUDES cM, so on most pixels cM already is the extreme and the
+        // clamp threw the whole result away. What survived was measured at
+        // about seven percent more high-frequency energy - real, and invisible.
         //
-        // (An earlier version computed a scalar range from the luma of the
-        // local extremes and then divided by it, which cancelled out and left
-        // a flat constant.)
+        // Two things were wrong with it: the clamp had no margin, so it
+        // bounded the pass to nothing, and the multiplier was one, so there
+        // was nothing to see even without the clamp.
+        //
+        // What this does instead:
+        //
+        //   - unsharp against the box, with a multiplier that actually moves
+        //     the picture at the low end of the slider
+        //   - attenuate by local contrast, so the hard edges - where sharpening
+        //     turns into a bright halo - get the least of it and the ordinary
+        //     texture of a scene, which is most of one, gets the most
+        //   - clamp to the neighbourhood's own extremes PLUS a margin, so the
+        //     pass can overshoot a little and stop there
+        //
+        // The contrast is one scalar from the luma of the extremes. Per
+        // channel it would sharpen a saturated edge by three different amounts
+        // and fringe it, which is what coloured fringes on an edge are.
         "    float3 box = (cM * 4.0 + (cN + cS + cE + cW) * 2.0 + (cNW + cNE + cSW + cSE)) * (1.0 / 16.0);\n"
-        // Sharpen by pushing away from the box.
-        //
-        // The bound on the overshoot is the clamp below, not an arithmetic
-        // argument. The box is a convex combination of the nine taps and cM
-        // lies within [mn, mx], so |box - cM| <= range and the deviation is at
-        // most `amount` times that. Multiplying by the range a second time, as
-        // an earlier version did, made a hard edge overshoot by up to four
-        // times full scale: it clipped and rang.
-        //
-        // In a flat region the range is 0, the box equals the centre, and the
-        // result is the centre pixel - which is what keeps a sky from being
-        // sharpened at all, and is the reason this is called contrast
-        // ADAPTIVE rather than just contrast weighted.
-        "    float3 sharpened = cM - (box - cM) * texel.z;\n"
-        // A sharper kernel should never invent a value the neighbourhood did
-        // not already contain. This is the guarantee rather than the hope, and
-        // it is per channel so a coloured edge keeps its colour.
-        "    sharpened = clamp(sharpened, mn, mx);\n"
-        // The grade is applied last, to the finished pixel. Doing it per tap
-        // would cost eight more table lookups and, worse, sharpen a graded
-        // centre against ungraded neighbours - the sharpening direction would
-        // be biased by the grade itself.
-        "    return float4(gamma(grade(sharpened)), 1.0); }\n"
+        "    float range = casLuma(mx) - casLuma(mn);\n"
+        "    float allow = 1.0 / (1.0 + range * 6.0);\n"
+        "    float3 sharpened = cM + (cM - box) * (texel.z * 5.0 * allow);\n"
+        // The margin is a fixed four percent, NOT a fraction of the local
+        // range. A fifth of the range was the first attempt and on a hard edge
+        // - where the range is most of the scale - that allowed an overshoot
+        // of nearly half the picture: the self-check measured a bright line
+        // peaking at 0.86 where the bright side was 0.45. A halo is judged
+        // against the whole scale, so the bound has to be too.
+        "    sharpened = clamp(sharpened, mn - 0.04, mx + 0.04);\n"
+"    return float4(gamma(grade(sharpened)), 1.0); }\n"
         // FXAA 3.11, the quality path, on the presented picture: the edges
         // the title's own picture has, softened by the luma along them.
         "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"

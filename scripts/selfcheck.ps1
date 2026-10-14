@@ -241,6 +241,42 @@ int main() {
         }
     }
 
+    # The sharpening kernel, run on the CPU.
+    #
+    # It shipped once and did nothing: it clamped the result to [mn, mx], and
+    # mn/mx are the extremes of a neighbourhood that INCLUDES the centre pixel,
+    # so on most pixels the centre already was the extreme and the clamp threw
+    # the result away. What survived was measured as about seven percent more
+    # high frequency energy - real, and invisible.
+    #
+    # So this asserts the two things that matter and that a "did anything
+    # change" test cannot: that the pass is visible at the middle of the slider,
+    # and that it stays inside its own bound and leaves flat areas alone. The
+    # seven percent figure is named in the comment there, because it is the
+    # exact number that was called a pass before.
+    $casCpp = Join-Path $Root 'scripts\cas_kernel.cpp'
+    $casExe = Join-Path $tmp 'cas_kernel.exe'
+    if (-not (Test-Path -LiteralPath $casCpp)) {
+        Fail 'the sharpening kernel could not be run' "the test file is missing: $casCpp"
+    } else {
+        $cDiags = Join-Path $tmp 'cas_compile.txt'
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $clang /nologo /std:c++17 "/Fe:$casExe" $casCpp /link /nologo 2> $cDiags 1> $null
+        } finally {
+            $ErrorActionPreference = $previous
+        }
+        if (-not (Test-Path -LiteralPath $casExe)) {
+            $why = if (Test-Path -LiteralPath $cDiags) { ((Get-Content $cDiags -Raw).Trim() -split "`n" | Select-Object -First 2) -join ' ' } else { 'no compiler output' }
+            Fail 'the sharpening kernel could not be run' ("it did not compile, so the check was SKIPPED, not passed: $why")
+        } else {
+            $casOut = & $casExe 2>&1
+            if ($LASTEXITCODE -eq 0) { Pass 'the sharpening is visible at the slider middle, stays bounded, and leaves flat areas alone' }
+            else { Fail 'the sharpening does nothing an eye could see' ($casOut -join '; ') }
+        }
+    }
+
     # The grading table's texture FORMAT.
     #
     # This is a separate check from the one below, and it exists because of a
