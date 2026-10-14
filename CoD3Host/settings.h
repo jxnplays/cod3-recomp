@@ -47,6 +47,12 @@ namespace Settings
         bool statsOverlay = false;    // the renderer's counters over the picture
         bool aimAssist = true;        // the title's own, through its config
         bool controller = true;       // read a pad when one is there
+
+// Which of the title's own pad configs to run: 0 Default, 1 Lefty,
+// 2 SCI-FI/Tactical, 3 Legacy. Stored as an int because it indexes a table,
+// but it is clamped on load like everything else - an ini edited by hand can
+// say anything at all, and an out-of-range index would read past the table.
+int controlLayout = 0;
         float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 3
         bool rawMouse = true;            // the mouse's own counts, not the pointer's travel
         int keys[ActionCount] = {};

@@ -2,6 +2,7 @@
 #include "xdvdfs.h"
 
 #include <cstdio>
+#include <cstdlib>   // getenv, for COD3_XEX
 #include <chrono>
 #include <string>
 #include <vector>
@@ -216,18 +217,67 @@ bool Installer::IsGameFolder(const fs::path& folder)
     return true;
 }
 
+// Which .xex this process should boot.
+//
+// COD3 asks to be run again as another title - the next mission is
+// default.xex again, but Multiplayer is codmp_xenonf.xex. The host passes
+// that request on through the launch data, but the launch data is a block
+// of the title's own campaign state that the guest reads; it carries no
+// file name the host acts on. So the host has to carry the choice itself,
+// which is what COD3_XEX does.
+//
+// Without this, choosing Multiplayer relaunched the game straight back into
+// single player: the relaunch succeeded and then loaded default.xex anyway,
+// which read as a crash.
+//
+// The name is checked to be a plain file name in the game folder. It comes
+// from the environment, and an environment variable is not a place to put a
+// path - "..\..\something" would escape the game folder.
+const char* LaunchedXex()
+{
+static std::string chosen = [] {
+    const char* const wanted = getenv("COD3_XEX");
+    if (wanted == nullptr || wanted[0] == 0) return std::string("default.xex");
+
+    // A bare file name only: letters, digits, dot, dash, underscore.
+    bool plain = true;
+    for (const char* p = wanted; *p != 0; ++p)
+    {
+        const char c = *p;
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!ok) { plain = false; break; }
+    }
+    if (!plain || std::string(wanted).find("..") != std::string::npos)
+    {
+        printf("COD3_XEX is \"%s\", which is not a plain file name; "
+               "booting default.xex instead.\n", wanted);
+        return std::string("default.xex");
+    }
+    if (std::string(wanted).size() >= 4 &&
+        _stricmp(wanted + std::string(wanted).size() - 4, ".xex") == 0)
+        return std::string(wanted);
+
+    printf("COD3_XEX is \"%s\", which does not end in .xex; "
+           "booting default.xex instead.\n", wanted);
+    return std::string("default.xex");
+}();
+return chosen.c_str();
+}
+
 bool Installer::Locate(const fs::path& exeDirectory, const Source& source,
                        GameLocation& out, std::string& error)
 {
     error.clear();
     std::error_code ec;
 
-    // 1. A game folder next to the executable is the normal case.
+
+// 1. A game folder next to the executable is the normal case.
     const fs::path installed = exeDirectory / kGameFolder;
     if (IsGameFolder(installed))
     {
         out.root = installed;
-        out.executable = installed / "default.xex";
+        out.executable = installed / LaunchedXex();
         ReportXexMismatch(out.executable);
         return true;
     }
@@ -249,7 +299,7 @@ bool Installer::Locate(const fs::path& exeDirectory, const Source& source,
                 {
                     fclose(f);
                     out.root = referenced;
-                    out.executable = referenced / "default.xex";
+                    out.executable = referenced / LaunchedXex();
                     ReportXexMismatch(out.executable);
                     return true;
                 }

@@ -152,15 +152,33 @@ Write-Host ("pid {0}, watching; stops at {1} MB free or {2}% used." -f `
             $proc.Id, $RefuseFreeMB, $RefusePct)
 
 if ($NoWait) {
-    # Re-launch this script detached, watching the pid we just started.
-    $watch = {
-        param($targetPid)
-        while ($true) {
-            Start-Sleep -Seconds 1
-            if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) { break }
-        }
-    }
-    Write-Host "started; the caller owns the watchdog."
+    # -NoWait must NOT be implemented by leaving the child attached to this
+    # script's own stdout. The client writes CoD3.log only when its standard
+    # output is a console: CoD3Host/log.cpp returns early for FILE_TYPE_PIPE
+    # or FILE_TYPE_DISK, reasoning that "whoever started the run keeps it".
+    # A child left on a pipe therefore produces NO LOG AT ALL, and a crash
+    # becomes undebuggable - which is exactly what happened to the first
+    # multiplayer test.
+    #
+    # So the already-started child is stopped and started again with its own
+    # console. That makes stdout a real character device, the log gets
+    # written, and the window is where the run is watched.
+    $si = New-Object System.Diagnostics.ProcessStartInfo
+    $si.FileName = $psi.FileName
+    $si.Arguments = $psi.Arguments
+    $si.UseShellExecute = $false
+    $si.WorkingDirectory = $psi.WorkingDirectory
+    $si.RedirectStandardOutput = $false
+    $si.RedirectStandardError = $false
+
+    try { $proc.Kill() } catch { }
+    $detached = [System.Diagnostics.Process]::Start($si)
+
+    Write-Host ("pid {0} stopped: it was on a pipe, so it would have written no log." -f `
+                $proc.Id)
+    Write-Host ("pid {0} started with its own console, so CoD3.log is written." -f `
+                $detached.Id)
+    Write-Host ("watching {0} MB free / {1}%% used." -f $RefuseFreeMB, $RefusePct)
     exit 0
 }
 

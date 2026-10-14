@@ -326,6 +326,61 @@ namespace
                     ImGui::Checkbox("Controller support", &g_edit.controller);
                     ImGui::SameLine();
                     ImGui::TextDisabled("(the pad's own icons and menu navigation)");
+
+                    // Control layout: the title's own configs, run as it runs
+                    // them. Not button artwork - these are binds. The title
+                    // reads xenon_a.cfg on its own at every front end load, so
+                    // a layout chosen here is applied again at the next
+                    // restart and does not need writing to disk.
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Control layout");
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(the title's own config, run as a command)");
+
+                    static const char* const kLayoutNames[] = {
+                        "Default", "Lefty", "SCI-FI / Tactical", "Legacy"
+                    };
+                    // The matching files, in the same order.
+                    static const char* const kLayoutFiles[] = {
+                        "xenon_a.cfg", "xenon_b.cfg", "xenon_c.cfg", "xenon_d.cfg"
+                    };
+                    const int layoutCount = int(sizeof(kLayoutFiles) / sizeof(kLayoutFiles[0]));
+                    int& layout = g_edit.controlLayout;
+                    if (layout < 0 || layout >= layoutCount) layout = 0;
+
+                    if (ImGui::BeginCombo("##layout", kLayoutNames[layout], layoutCount))
+                    {
+                        for (int i = 0; i < layoutCount; i++)
+                        {
+                            const bool picked = (i == layout);
+                            // The name is the id: without it every entry in
+                            // this combo shares one identifier, the same
+                            // mistake the mods menu's Set buttons made.
+                            if (ImGui::Selectable(kLayoutNames[i], picked))
+                            {
+                                layout = i;
+                                // Bare file name on purpose. The title
+                                // resolves exec against config\, so
+                                // "exec config/xenon_b.cfg" looks for
+                                // d:\config\config\xenon_b.cfg and finds
+                                // nothing - measured, not assumed.
+                                Kernel::QueueConsoleCommand(
+                                    std::string("exec ") + kLayoutFiles[i]);
+                            }
+                            if (picked) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Apply now", ImVec2(110.0f * g_fontScale, 0)))
+                    {
+                        Kernel::QueueConsoleCommand(
+                            std::string("exec ") + kLayoutFiles[layout]);
+                    }
+                    ImGui::TextDisabled("  %s", kLayoutFiles[layout]);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(applied at the next front end load too)");
+
                     ImGui::Separator();
                     ImGui::TextUnformatted("Keys");
                     if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_SizingStretchProp))
@@ -367,7 +422,35 @@ namespace
             }
             ImGui::Separator();
             // Apply writes and uses the values; Cancel drops the edits.
-            const bool dirty = memcmp(&g_edit, &applied, sizeof(Settings::Values)) != 0;
+            //
+            // Compared field by field, not with memcmp over the whole struct.
+            // Values mixes bool, int and float, so it has padding bytes, and
+            // padding is whatever was in memory - two structs with identical
+            // settings can differ there and make Apply spuriously clickable,
+            // which then writes those stale values back to the ini.
+            bool dirty = false;
+            {
+                const Settings::Values& a = g_edit;
+                const Settings::Values& b = applied;
+                dirty =
+                    a.controller != b.controller ||
+                    a.controlLayout != b.controlLayout ||
+                    a.aimAssist != b.aimAssist ||
+                    a.mouseSensitivity != b.mouseSensitivity ||
+                    a.rawMouse != b.rawMouse ||
+                    a.fov != b.fov ||
+                    a.modelDetail != b.modelDetail ||
+                    a.windowMode != b.windowMode ||
+                    a.vsync != b.vsync ||
+                    a.unlockFrameRate != b.unlockFrameRate ||
+                    a.antialiasing != b.antialiasing ||
+                    a.textureQuality != b.textureQuality ||
+                    a.anisotropy != b.anisotropy ||
+                    a.resolutionWidth != b.resolutionWidth ||
+                    a.resolutionHeight != b.resolutionHeight;
+                for (int i = 0; i < Settings::ActionCount; i++)
+                    if (a.keys[i] != b.keys[i]) dirty = true;
+            }
             ImGui::BeginDisabled(!dirty);
             if (ImGui::Button("Apply", ImVec2(140 * g_fontScale, 0)))
             {

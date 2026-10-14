@@ -61,12 +61,28 @@ void Log::Start()
     const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     const DWORD type = (out == nullptr || out == INVALID_HANDLE_VALUE) ? FILE_TYPE_UNKNOWN : GetFileType(out);
     // Already written to a file or a pipe: whoever started the run keeps it.
-    if (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE) return;
+    //
+    // COD3_LOG=always overrides that. When this was first written, launching
+    // the client with output on a pipe produced no log at all, so a crash
+    // left nothing to read - the run that found that out was the multiplayer
+    // relaunch, which is the one crash most worth having evidence for. The
+    // reasoning here is sound for a long-lived pipe the starter keeps, and
+    // wrong for a starter that has already gone away.
+    const char* always = getenv("COD3_LOG");
+    if (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE) {
+        if (always == nullptr || strcmp(always, "always") != 0) return;
+    }
 
     wchar_t exe[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, exe, MAX_PATH) == 0) return;
     const std::filesystem::path directory = std::filesystem::path(exe).parent_path();
-    const std::filesystem::path path = setting != nullptr && setting[0] != 0 && strcmp(setting, "1") != 0
+    // COD3_LOG is "0" (none), "1" (the default beside the executable), "always"
+    // (force the default even on a pipe), or a path. The keywords are not
+    // paths and must not fall into the path branch - otherwise COD3_LOG=always
+    // writes a file literally called "always".
+    const bool named = setting != nullptr && setting[0] != 0 &&
+        strcmp(setting, "1") != 0 && strcmp(setting, "always") != 0;
+    const std::filesystem::path path = named
         ? std::filesystem::path(setting) : directory / L"CoD3.log";
     std::error_code ignored;
     std::filesystem::path previous = path;

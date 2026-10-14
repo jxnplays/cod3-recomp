@@ -159,6 +159,7 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
             else if (key == "stats_overlay") v.statsOverlay = atoi(value.c_str()) != 0;
             else if (key == "aim_assist") v.aimAssist = atoi(value.c_str()) != 0;
             else if (key == "controller") v.controller = atoi(value.c_str()) != 0;
+        else if (key == "control_layout") v.controlLayout = atoi(value.c_str());
             else if (key == "mouse_sensitivity") v.mouseSensitivity = float(atof(value.c_str()));
             else if (key == "raw_mouse") v.rawMouse = atoi(value.c_str()) != 0;
             else if (key.compare(0, 4, "key_") == 0)
@@ -180,6 +181,9 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     if (v.modelDetail < 0 || v.modelDetail > 1) v.modelDetail = 1;
     if (v.windowMode < 0 || v.windowMode > 1) v.windowMode = 0;
     if (!(v.mouseSensitivity >= 0.1f && v.mouseSensitivity <= 3.0f)) v.mouseSensitivity = 1.0f;
+    // Four layouts, 0 to 3. The ini is hand-editable, so an index out of
+    // range has to be corrected here rather than trusted.
+    if (v.controlLayout < 0 || v.controlLayout > 3) v.controlLayout = 0;
     std::lock_guard<std::mutex> lock(g_mutex);
     g_values = v;
 }
@@ -196,7 +200,7 @@ void Settings::Save()
         else snprintf(resolution, sizeof(resolution), "desktop");
         fprintf(file, "[graphics]\nrenderer = %d\nresolution = %s\nresolution_scale = %d\ntexture_filter = %d\nanisotropy = %d\nvsync = %d\nunlock_frame_rate = %d\nantialiasing = %d\ntexture_quality = %d\nfov = %d\nmodel_detail = %d\naim_blur = %d\nconsole_depth = %d\nnative_commands = %d\nwatch_writes = %d\nwindow_mode = %d\nfps_overlay = %d\nstats_overlay = %d\n",
             v.renderer, resolution, v.resolutionScale, v.textureFilter, v.anisotropy, v.vsync ? 1 : 0, v.unlockFrameRate ? 1 : 0, v.antialiasing, v.textureQuality, v.fov, v.modelDetail, v.aimBlur ? 1 : 0, v.consoleDepth ? 1 : 0, v.nativeCommands ? 1 : 0, v.watchWrites ? 1 : 0, v.windowMode, v.fpsOverlay ? 1 : 0, v.statsOverlay ? 1 : 0);
-        fprintf(file, "[game]\naim_assist = %d\ncontroller = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.controller ? 1 : 0, v.mouseSensitivity, v.rawMouse ? 1 : 0);
+        fprintf(file, "[game]\naim_assist = %d\ncontroller = %d\ncontrol_layout = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.controller ? 1 : 0, v.controlLayout, v.mouseSensitivity, v.rawMouse ? 1 : 0);
         fprintf(file, "[keys]\n");
         for (int i = 0; i < ActionCount; i++) fprintf(file, "key_%s = %d\n", ActionKeys[i], v.keys[i]);
         fclose(file);

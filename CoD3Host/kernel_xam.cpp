@@ -785,8 +785,19 @@ namespace
 
     // This executable again, with the launch data in a file and the scripted
     // run's knobs left out (the relaunched title goes where its data says).
-    bool Relaunch()
+    //
+    // whichXex is the file to boot next: default.xex for the next mission,
+    // codmp_xenonf.xex for Multiplayer. It is passed as COD3_XEX, because
+    // the launch data is the title's own campaign state and carries no file
+    // name for the host to act on. Without this the relaunch always booted
+    // default.xex, so choosing Multiplayer came straight back to single
+    // player - which is what it looked like from the menu.
+    bool Relaunch(const char* whichXex)
     {
+        std::wstring wanted;
+        for (const char* p = whichXex; *p != 0; ++p)
+            wanted.push_back(wchar_t(static_cast<unsigned char>(*p)));
+
         std::filesystem::path file = Kernel::SavesRoot();
         if (file.empty()) file = std::filesystem::temp_directory_path();
         file /= "launchdata.bin";
@@ -807,13 +818,21 @@ namespace
                 // the first process, not to the one the title starts.
                 if (_wcsnicmp(entry, L"COD3_MAP=", 9) == 0 || _wcsnicmp(entry, L"COD3_CMD=", 9) == 0 ||
                     _wcsnicmp(entry, L"COD3_PAD=", 9) == 0 || _wcsnicmp(entry, L"COD3_WIN=", 9) == 0 ||
-                    _wcsnicmp(entry, L"COD3_LAUNCHDATA=", 16) == 0) continue;
+                    _wcsnicmp(entry, L"COD3_LAUNCHDATA=", 16) == 0 ||
+                    _wcsnicmp(entry, L"COD3_XEX=", 9) == 0) continue;
                 environment += entry;
                 environment.push_back(0);
             }
             FreeEnvironmentStringsW(block);
         }
         environment += L"COD3_LAUNCHDATA=" + file.wstring();
+        // The file to boot next, taken from the title's own path so the
+        // leading "d:\" is dropped. The check in LaunchedXex() confirms it
+        // is a plain file name; all that is stripped here is the directory.
+        std::wstring boot(wanted);
+        const size_t cut = boot.find_last_of(L"\\/");
+        if (cut != std::wstring::npos) boot = boot.substr(cut + 1);
+        environment += L"COD3_XEX=" + boot;
         environment.push_back(0);
         environment.push_back(0);
 
@@ -906,13 +925,22 @@ PPC_FUNC(__imp__XamLoaderLaunchTitle)
     std::string lower(path);
     for (char& c : lower) c = char(tolower(static_cast<unsigned char>(c)));
     const bool isDashboard = path[0] == 0;
+    const char* bootAs = path;   // the name handed to the next process
+    // The suffix is 4 characters, ".xex". This said 11 - left over from the
+    // "default.xex" test it replaced - while comparing against ".xex", so
+    // it compared the last 11 characters against a 4-character string and
+    // could never match. The multiplayer relaunch was therefore still
+    // refused, and the first test of this fix failed exactly as the bug
+    // did. The length and the offset have to be the suffix's length.
+    const std::string_view suffix = ".xex";
     const bool wantsAnotherTitle =
-        lower.size() >= 11 && lower.compare(lower.size() - 11, 11, ".xex") == 0;
+        lower.size() >= suffix.size() &&
+        lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) == 0;
     if (wantsAnotherTitle && !isDashboard)
     {
-        if (Relaunch())
+        if (Relaunch(bootAs))
         {
-            printf("Relaunched for \"%s\"; this process ends.\n", path);
+            printf("Relaunched to boot \"%s\"; this process ends.\n", path);
             fflush(stdout);
             Log::Finish();
             ExitProcess(0);
