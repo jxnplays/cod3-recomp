@@ -191,8 +191,15 @@ namespace
         const std::time_t now = std::time(nullptr);
         std::tm local{};
         localtime_s(&local, &now);
-        char name[64];
-        strftime(name, sizeof(name), "CoD3-%Y%m%d-%H%M%S.png", &local);
+        // One-second resolution, and the scripted path can take several
+        // pictures inside one second - which silently overwrote them. The
+        // counter is what makes -Every usable; without it a run writes thirty
+        // files a second into one name and reports success.
+        static std::atomic<uint32_t> captureIndex{ 0 };
+        char name[80];
+        strftime(name, sizeof(name) - 12, "CoD3-%Y%m%d-%H%M%S", &local);
+        snprintf(name + strlen(name), sizeof(name) - strlen(name), "-%05u.png",
+                 captureIndex.fetch_add(1, std::memory_order_relaxed) % 100000u);
         const std::filesystem::path file = folder / name;
 
         ComPtr<IWICImagingFactory> factory;

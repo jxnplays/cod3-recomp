@@ -1331,9 +1331,20 @@ namespace
             g_backTexture.Reset();
             g_context->OMSetRenderTargets(0, nullptr, nullptr);
             ForgetBindings();
-            g_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, g_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
-            g_swapChainWidth = width;
-            g_swapChainHeight = height;
+            // Checked. Recorded as updated even when the call failed, the old size was
+    // latched against a chain that never resized, and every frame afterwards
+    // drew the wrong size with nothing in the log to say so.
+    const HRESULT resized = g_swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(resized))
+    {
+        printf("render: the swap chain would not resize to %dx%d (0x%08lX); recreating it\n",
+               width, height, (unsigned long)resized);
+        fflush(stdout);
+        g_swapChain.Reset();
+        return false;
+    }
+    g_swapChainWidth  = width;
+    g_swapChainHeight = height;
         }
         if (!g_backView)
         {
@@ -1361,7 +1372,17 @@ namespace
             for (uint32_t i = 0; i < 256; i++) { const uint32_t v = (i << 2) | (i >> 6); identity[i] = v | (v << 10) | (v << 20) | (3u << 30); }
             const D3D11_SUBRESOURCE_DATA initial{ identity, 0, 0 };
             if (FAILED(g_device->CreateTexture1D(&desc, &initial, &g_gammaTexture))) return nullptr;
-            g_device->CreateShaderResourceView(g_gammaTexture.Get(), nullptr, &g_gammaView);
+            // Checked. Unchecked, this returns a null view for a texture that
+            // exists, and it is bound to t1 and sampled by gamma() in every
+            // present program - the same black screen as an unbound t2.
+            if (FAILED(g_device->CreateShaderResourceView(g_gammaTexture.Get(), nullptr, &g_gammaView)))
+            {
+                printf("render: the console's colour table could not be viewed; the picture is shown without it\n");
+                fflush(stdout);
+                g_gammaTexture.Reset();
+                g_gammaView.Reset();
+                return nullptr;
+            }
         }
         static const bool off = getenv("COD3_NOGAMMA") != nullptr;
         uint32_t table[256];
@@ -1490,9 +1511,37 @@ namespace
                 }
             }
 
-            DrawQuad(frame->resource, frame->width, frame->height, 0, 0, float(frame->width), float(frame->height),
-                     g_backView.Get(), viewport, program, g_linearSampler.Get(),
-                     GammaTable(), GradeTable(shown), shown.sharpen, shown.saturation);
+            // Neither colour table may be missing. A null view leaves the slot
+            // unbound, the shader samples zero, and every pixel becomes
+            // gamma(0): a black screen with no other symptom. Both have
+            // fallbacks, and this is where they are honoured - the previous
+            // version documented that rule in GradeTable and then handed null
+            // straight through to DrawQuad anyway.
+            ID3D11ShaderResourceView* const gamma = GammaTable();
+            ID3D11ShaderResourceView* const grade = GradeTable(shown);
+            if (gamma == nullptr || grade == nullptr)
+            {
+                // The only path that still works is the plain present: it is
+                // the pre-grading shader and samples neither table.
+                static bool reported = false;
+                if (!reported)
+                {
+                    printf("render: no %s table; the picture is drawn without it\n",
+                           gamma == nullptr ? "display gamma" : "grading");
+                    fflush(stdout);
+                    reported = true;
+                }
+                DrawQuad(frame->resource, frame->width, frame->height, 0, 0, float(frame->width), float(frame->height),
+                         g_backView.Get(), viewport,
+                         g_presentPlainPixelShader ? g_presentPlainPixelShader.Get() : g_presentPixelShader.Get(),
+                         g_linearSampler.Get());
+            }
+            else
+            {
+                DrawQuad(frame->resource, frame->width, frame->height, 0, 0, float(frame->width), float(frame->height),
+                         g_backView.Get(), viewport, program, g_linearSampler.Get(),
+                         gamma, grade, shown.sharpen, shown.saturation);
+            }
         }
         // The menu, the counters and the screenshot key, over the picture.
         Overlay::Initialize(g_swapChainWindow, g_device.Get(), g_context.Get());
