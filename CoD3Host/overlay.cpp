@@ -3,6 +3,7 @@
 #include "settings.h"
 #include "render_stats.h"
 #include "render.h"
+#include "gamepad_nav.h"
 
 #include <atomic>
 #include <chrono>
@@ -323,6 +324,59 @@ namespace
                     ImGui::SameLine();
                     ImGui::TextDisabled("(the game's own; takes effect after a restart)");
                     ImGui::Checkbox("Controller support", &g_edit.controller);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(the pad's own icons and menu navigation)");
+
+                    // Which buttons to draw, and a preview of them. The choice
+                    // is the art and nothing else: both sets are stored under
+                    // the same logical names, so the code above never asks
+                    // which one it is drawing.
+                    {
+                        static const char* const kSetNames[] = {
+                            "Xbox (Xbox Series)",
+                            "PlayStation (DualSense)",
+                            "Letters only (A, B, X, Y)",
+                        };
+                        ImGui::TextUnformatted("Button icons");
+                        ImGui::SameLine(140.0f);
+                        if (ImGui::BeginCombo("##buttonsets", kSetNames[g_edit.buttonIcons], 3))
+                        {
+                            for (int i = 0; i < 3; i++)
+                                if (ImGui::Selectable(kSetNames[i], g_edit.buttonIcons == i)) g_edit.buttonIcons = i;
+                            ImGui::EndCombo();
+                        }
+                        // On its own line. The window is 620 wide and this text did not
+                        // fit beside the combo, which pushed it off the edge and
+                        // made the choice look broken.
+                        ImGui::TextDisabled("PlayStation by default - most players of a PC build hold one.");
+
+                        // The icons themselves, so the choice is made by looking
+                        // at it rather than by reading a name. This row wraps:
+                        // ten icons on one line do not fit, and running off the
+                        // side is worse than two shorter rows.
+                        if (g_edit.buttonIcons < ButtonIcons::Count())
+                        {
+                            const float size = 22.0f * g_fontScale;
+                            static const char* const kShow[] = { "a", "b", "x", "y", "l1", "r1", "l2", "r2", "start", "back" };
+                            bool any = false;
+                            for (const char* logical : kShow)
+                            {
+                                if (ImGui::GetContentRegionAvail().x < size * 2.0f) ImGui::NewLine();
+                                if (ButtonIcons::Draw(g_edit.buttonIcons, logical, size)) any = true;
+                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  -  %s", logical, kSetNames[g_edit.buttonIcons]);
+                                ImGui::SameLine();
+                            }
+                            ImGui::NewLine();
+                            if (!any)
+                                ImGui::TextDisabled("No icons found. The buttons\\ folder must sit beside CoD3.exe.");
+                            else
+                                ImGui::TextDisabled("hover a button for its name");
+                        }
+                        else
+                        {
+                            ImGui::TextDisabled("A     B     X     Y     L1     R1     (letters, no images)");
+                        }
+                    }
                     ImGui::Separator();
                     ImGui::TextUnformatted("Keys");
                     if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_SizingStretchProp))
@@ -396,10 +450,20 @@ void Overlay::Initialize(void* hwnd, ID3D11Device* device, ID3D11DeviceContext* 
     g_hwnd = static_cast<HWND>(hwnd);
     g_device = device;
     g_context = context;
+    // The button icons are made with this device rather than one taken out of
+    // ImGui's backend, which is private in this version of imgui. Handing it
+    // over here is the only place the device is guaranteed to exist.
+    ButtonIcons::SetDevice(device, context);
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
+    // Keyboard and gamepad navigation, so the settings and the mod menu can be
+    // driven with a controller as well as a mouse. Nothing here is the mouse
+    // path changed: this adds a second way in rather than replacing one, and
+    // the mouse works exactly as before.
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavNoCaptureKeyboard;   // the title still reads keys
     // A readable size on any screen: the font grows with the resolution
     // the picture is drawn at, which is the window's size or the screen's.
     int width = 0, height = 0;
@@ -601,6 +665,10 @@ void Overlay::Render(ID3D11RenderTargetView* back, ID3D11Texture2D* backTexture,
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    // The pad, as navigation keys. After NewFrame so it counts for this
+    // frame, and before anything is drawn so the selection has moved by the
+    // time the panels are built.
+    GamepadNav::Feed();
     if (values.fpsOverlay || values.statsOverlay)
     {
         ImGui::SetNextWindowPos(ImVec2(8, 8));

@@ -39,3 +39,9 @@ __pycache__/
 # FFmpeg headers, fetched by scripts/get_ffmpeg_headers.ps1. GPL; not ours to
 # redistribute, so they are not committed. See thirdparty/ffmpeg/README.md.
 thirdparty/ffmpeg/include/
+
+# Button icons: shipped beside the executable at run time, copied from
+# assets/buttons/ by the build. They are small and are kept in the repo, so
+# nothing here is ignored - this is only here to catch a stray copy someone
+# drops in the source tree by hand.
+build/CoD3Host/buttons/

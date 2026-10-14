@@ -574,7 +574,16 @@ namespace
             const char* text = getenv("COD3_NOPAD");
             return text != nullptr && text[0] != 0 && text[0] != '0';
         }();
-        if (g_getState != nullptr && !padIgnored && Settings::Get().controller)
+
+        // The settings menu is the menu's, not the title's. ReadKeyboard()
+        // gives up its keys when it is up, but a physical pad was read here
+        // whatever the overlay was doing - so with the menu open, pressing
+        // A also jumped, because the title saw the same press the menu did.
+        // The overlay reads the pad itself (GamepadNav::Feed) and must be the
+        // only thing that sees it while it is up.
+        const bool overlayOwnsInput = Overlay::IsOpen() || !Window::HasFocus();
+
+        if (g_getState != nullptr && !padIgnored && !overlayOwnsInput && Settings::Get().controller)
         {
             XInputState state{};
             if (g_getState(0, &state) == ERROR_SUCCESS)
@@ -629,6 +638,25 @@ Input::Pad Input::State()
 uint16_t Input::Buttons()
 {
     return State().buttons;
+}
+
+// The pad, from XInput, past Refresh(). See input.h for why the overlay needs
+// this and why it must not be told to stand down when the menu is up: the
+// menu is what is holding the pad, and it is reading it from here.
+bool Input::ReadPadDirect(Pad& out)
+{
+    out = Pad{};
+    if (g_getState == nullptr || !Settings::Get().controller) return false;
+    XInputState state{};
+    if (g_getState(0, &state) != ERROR_SUCCESS) return false;
+    out.buttons = state.gamepad.buttons;
+    out.leftTrigger = state.gamepad.leftTrigger;
+    out.rightTrigger = state.gamepad.rightTrigger;
+    out.thumbLX = state.gamepad.thumbLX;
+    out.thumbLY = state.gamepad.thumbLY;
+    out.thumbRX = state.gamepad.thumbRX;
+    out.thumbRY = state.gamepad.thumbRY;
+    return true;
 }
 
 bool Input::MouseHeld()

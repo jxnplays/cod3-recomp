@@ -32,6 +32,21 @@ namespace Input
     // The Xbox button mask the pad is currently reporting.
     uint16_t Buttons();
 
+    // The pad, read straight from XInput, bypassing everything below.
+    //
+    // This exists for the overlay, and deliberately so. State() and Buttons()
+    // both call Refresh(), which is where the overlay's hold on input is
+    // enforced: while the settings menu is up the title must not see the pad,
+    // or pressing A jumps the player as well as activating whatever is
+    // selected. An overlay that read its state from there would see the same
+    // empty pad the title does and could not be driven at all.
+    //
+    // So the overlay reads the pad from here instead. One pad, read twice per
+    // frame by whoever needs it, and the two disagree on purpose.
+    //
+    // Returns false when no pad answered, or when controller support is off.
+    bool ReadPadDirect(Pad& out);
+
     // Whether the mouse is being held by the window and turned into the right
     // stick. Clicking in the window takes it; Escape gives it back.
     bool MouseHeld();
