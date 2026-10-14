@@ -177,6 +177,42 @@ int main() {
         else { Fail 'the shared logic is wrong' ($logicOut -join '; ') }
     }
 
+    # The untouched default path, pinned to the shader it replaced.
+    #
+    # "The defaults are the identity" has two halves. The arithmetic of the
+    # grading TABLE is checked below. This checks the other half: that with
+    # every control at its default the host runs a program whose body is
+    # character-for-character what the present path ran before grading
+    # existed, so there is no second texture, no extra sample and no dot
+    # product in the common case.
+    #
+    # The literal below is the `present` entry point as it stood in b0baa71,
+    # the commit before the colour work. The name is normalised because the
+    # entry point was renamed to presentPlain when grading arrived.
+    $expectedPresent = 'return float4(gamma(source.Sample(smp, v.uv).rgb), 1.0); }'
+    $renderText = Get-Content (Join-Path $Src 'render_d3d11.cpp') -Raw
+    $m = [regex]::Match($renderText, '"float4 presentPlain\(V v\) : SV_Target \{ (?<body>[^"]*)')
+    if (-not $m.Success) {
+        Fail 'the default present path is not pinned' 'could not find the presentPlain entry point in render_d3d11.cpp'
+    } else {
+        # The captured body ends with the literal two characters \n - that is
+        # the newline escape closing the C++ string literal, not part of the
+        # shader. Strip it before comparing.
+        $body = ($m.Groups['body'].Value.Trim() -replace '\\n$', '').Trim()
+        if ($body -ne $expectedPresent) {
+            Fail 'the default present path is not pinned' "presentPlain now runs: $body`n        expected: $expectedPresent"
+        } else {
+            # And it must actually be selected when nothing is set. A correct
+            # program that is never chosen is the same defect as a wrong one.
+            $sel = [regex]::Match($renderText, '(?s)else if \(!graded && g_presentPlainPixelShader\) program = g_presentPlainPixelShader\.Get\(\);')
+            if (-not $sel.Success) {
+                Fail 'the default present path is not pinned' 'presentPlain is defined but never selected when grading is at its defaults'
+            } else {
+                Pass 'the default present path runs the shader it replaced, and is selected when nothing is set'
+            }
+        }
+    }
+
     # The grading table's texture FORMAT.
     #
     # This is a separate check from the one below, and it exists because of a

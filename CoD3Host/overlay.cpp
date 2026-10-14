@@ -29,6 +29,19 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 using Microsoft::WRL::ComPtr;
 
+namespace Overlay
+{
+// Set by the scripted capture path each time a picture is taken, and read by
+// the present path for the frame after. That one frame of lag is why the
+// captures still alternate instead of all landing on the same parity.
+static bool g_forcedGrade = false;
+
+// Defined outside the anonymous namespace below because the present path
+// calls it, and an anonymous-namespace function has internal linkage - which
+// is a link error rather than a warning.
+bool CaptureUsingForcedGrade() { return g_forcedGrade; }
+}
+
 namespace
 {
     // The window thread hands messages in and the command thread draws:
@@ -152,6 +165,9 @@ namespace
         g_capturing = -1;
     }
 
+    // Set by the scripted capture path each time a picture is taken, and read by
+    // the present path for the frame after. That one frame of lag is why the
+    // captures still alternate instead of all landing on the same parity.
     void SaveScreenshot(ID3D11Texture2D* back, int width, int height)
     {
         D3D11_TEXTURE2D_DESC desc{};
@@ -808,6 +824,42 @@ void Overlay::Render(ID3D11RenderTargetView* back, ID3D11Texture2D* backTexture,
     }
     // The screenshot first, of the picture alone.
     if (g_screenshotWanted.exchange(false) && backTexture != nullptr) SaveScreenshot(backTexture, width, height);
+
+    // Scripted captures, so a frame can be taken without anyone pressing F12.
+    //
+    // COD3_SHOT_AT=<frame>   take one picture at that frame counter
+    // COD3_SHOT_EVERY=<n>    take one every n frames instead
+    //
+    // This exists so the present path can be compared by eye without
+    // simulating input into somebody's session. The counters are read once,
+    // here, and never again, so there is nothing to reset.
+    //
+    // COD3_SHOT_ALT makes the captures alternate between the player's settings
+    // and a set of values from the environment, so two pictures one frame
+    // apart differ only by the feature being tested. The flip belongs to the
+    // CAPTURE, not to the frame - flipping every frame would leave every
+    // capture on the same parity and the alternation would be an illusion.
+    if (backTexture != nullptr)
+    {
+        static const uint64_t at = [] {
+            const char* e = getenv("COD3_SHOT_AT");
+            return e ? strtoull(e, nullptr, 10) : 0;
+        }();
+        static const uint64_t every = [] {
+            const char* e = getenv("COD3_SHOT_EVERY");
+            return e ? strtoull(e, nullptr, 10) : 0;
+        }();
+        static bool alternate = getenv("COD3_SHOT_ALT") != nullptr;
+        static bool flipped = false;
+        const uint64_t frame = g_frames.load(std::memory_order_relaxed);
+        const bool capturing = (every != 0 && frame != 0 && frame % every == 0) || (at != 0 && frame == at);
+        if (capturing)
+        {
+            if (alternate) flipped = !flipped;
+            g_forcedGrade = alternate && flipped;
+            SaveScreenshot(backTexture, width, height);
+        }
+    }
 
     const Settings::Values values = Settings::Get();
     const bool open = g_open.load();

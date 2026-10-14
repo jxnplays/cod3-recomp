@@ -15,10 +15,10 @@ priority list.
 | Spec priority | State |
 |---|---|
 | 1. Ultrawide + HUD scaling | **built, default off, never seen filled** - needs a wide monitor |
-| 2. FSR/XeSS + CAS | CAS **built, shaders compile, never seen on a picture**; FSR/XeSS not started |
+| 2. FSR/XeSS + CAS | CAS **measured on a level: +6.9% detail, no ringing**; FSR/XeSS not started |
 | 3. SSAO/GTAO | not started |
 | 4. Soft shadow filtering | not started |
-| 5. Colour grading / LUT | **built, identity measured, never seen on a picture** |
+| 5. Colour grading / LUT | **measured on a level: saturation +122%, detail unchanged** |
 | 6. SMAA | not started |
 | 7. FOV to 180 | **done**; viewmodel scaling not done |
 | 8-10. Sky, weather, DX12/Vulkan | not started |
@@ -134,22 +134,41 @@ exact by construction, not by argument.
 
 ## What is measured about these two, and what is not
 
-**Measured.** The identity of the grading table as the GPU reads it, over all
-256 entries. That the texture format matches its packing and decode - the
-defect that got through once, and the check that now sees it. That every
-control does something, including the slider endpoints, including that mid
-grey survives the extremes of the temperature control. That the saturation
-add-back is genuinely inexact. That the host builds, and that all five
-built-in shaders compile at runtime on a real GPU.
+**Measured, on a real level.** Saint Lo, booted directly with `COD3_MAP`, the
+picture captured by `scripts/capture.ps1` and compared with `scripts/ab.ps1`.
 
-**Not measured.** Nothing has been looked at. No one has seen a level with the
-Colour page open. The title does not paint on a cold boot on this machine -
-the binary from before this work reports the same `1040x624` swap, the same
-`0 k triangles` and the same 60 fps, so a black window here is not evidence
-about this feature and is not evidence against it.
+The comparison that matters is the alternating one. Two separate runs cannot be
+compared - the camera is somewhere different each time, and the first attempt
+to measure sharpening that way said it had *lowered* detail, which was the
+scene talking and not the feature. `COD3_SHOT_ALT` makes consecutive captures
+alternate between the player's settings and a forced set, flipping on exactly
+the capture frames, so each pair is the same scene one frame apart.
 
-The shaders compile and the arithmetic holds; whether the result looks like an
-improvement is a question for an eye, and nobody has claimed otherwise.
+| | sharpening 0.6 | grading 1.15 / 1.25 / 1.5 |
+|---|---|---|
+| pairs compared | 18 | 19 |
+| high frequency energy | **+6.93%** | −1.33% |
+| mean brightness | +0.11% | −8.94% |
+| saturation | −3.35% | **+122%** |
+
+That is what each control should do. Sharpening raises detail and leaves
+brightness alone. Grading raises saturation, moves brightness about mid grey,
+and leaves detail alone - which also confirms grading is not quietly
+sharpening. At zero guest faults throughout.
+
+**Seen, not inferred.** The pictures were looked at. At the defaults the game
+renders correctly - which is the strongest single piece of evidence that the
+10-bit format bug is gone, since that bug darkened everything by four times and
+would have been impossible to miss. Sharpening at 0.6 is clean, with no ringing
+or halos around the white text or the sky/buildings edge. Grading is
+unmistakable: at contrast 1.3 / saturation 1.4 / temperature 3 the cold blue
+fog of Saint Lo goes hard sepia, which is a lot, and at 1.15 / 1.25 / 1.5 it is
+a clear but usable lift.
+
+**Not measured.** Nobody has pressed Apply in the menu mid-game and watched the
+picture change. The settings reach the present path every frame and the ini
+round trip proves the value arrives, but the button itself has not been pushed
+by anything but the self-check.
 
 ## Known gaps that are not features
 

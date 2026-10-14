@@ -40,6 +40,15 @@ bool DrawModsTab();
     void ConsolePrint(const std::string& line);
     void RequestScreenshot();
 
+// Whether the frame now being drawn is one where a scripted capture
+// (COD3_SHOT_AT / COD3_SHOT_EVERY) is using the COD3_SHOT_ALT values instead
+// of the player's settings.
+//
+// The present path asks this so that two captures one frame apart can differ
+// only by the feature under test. Comparing two separate runs cannot do that,
+// because the camera is somewhere different each time.
+bool CaptureUsingForcedGrade();
+
     // Frames the title finished, for the counter; called at every swap.
     void NoteFrame();
 

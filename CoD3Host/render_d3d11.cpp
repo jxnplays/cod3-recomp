@@ -1427,12 +1427,48 @@ namespace
             // player who selected FXAA asked for softening and CAS for
             // sharpening, and neither of them should silently lose to the
             // other's half-measure.
-            // With every control at its default the whole pass is the identity,
-            // so the cheap program that has no grading in it at all is used
-            // instead. This is the common case and it should cost nothing.
-            const bool graded = settings.contrast != 1.0f || settings.saturation != 1.0f ||
-                                settings.temperature != 0.0f || settings.brightness != 0.0f;
-            const bool cas = settings.sharpen > 0.0f && g_casPixelShader;
+            // The values the present path actually uses.
+            //
+            // Normally these are just the settings. Under COD3_SHOT_ALT they
+            // alternate between the settings and a set given in the
+            // environment, flipping on exactly the frames a capture is taken.
+            //
+            // That exists because comparing two separate runs does not work:
+            // the camera is somewhere else each time, so any difference in the
+            // pictures is mostly the scene rather than the feature. Two
+            // adjacent frames with one setting each is the only comparison
+            // where the scene is the same. See scripts/capture.ps1.
+            Settings::Values shown = settings;
+            {
+                static const Settings::Values forced = [&settings] {
+                    Settings::Values v = settings;
+                    const char* e = getenv("COD3_SHOT_ALT");
+                    if (e != nullptr)
+                    {
+                        float v5[5] = { 1.0f, 1.0f, 0.0f, 0.0f, 0.0f };
+                        int i = 0;
+                        for (const char* p = e; i < 5 && p != nullptr && *p; )
+                        {
+                            v5[i++] = float(atof(p));
+                            const char* c = strchr(p, ',');
+                            p = c ? c + 1 : nullptr;
+                        }
+                        v.contrast = v5[0];
+                        v.saturation = v5[1];
+                        v.temperature = v5[2];
+                        v.brightness = v5[3];
+                        v.sharpen = v5[4];
+                    }
+                    return v;
+                }();
+                // Set by the capture path, one frame ahead of this read -
+                // which is why the pictures still alternate rather than all
+                // landing on one parity.
+                if (Overlay::CaptureUsingForcedGrade()) shown = forced;
+            }
+            const bool graded = shown.contrast != 1.0f || shown.saturation != 1.0f ||
+                                shown.temperature != 0.0f || shown.brightness != 0.0f;
+            const bool cas = shown.sharpen > 0.0f && g_casPixelShader;
             ID3D11PixelShader* program = g_presentPixelShader.Get();
             if (cas) program = g_casPixelShader.Get();
             else if (fxaa) program = g_fxaaPixelShader.Get();
@@ -1456,7 +1492,7 @@ namespace
 
             DrawQuad(frame->resource, frame->width, frame->height, 0, 0, float(frame->width), float(frame->height),
                      g_backView.Get(), viewport, program, g_linearSampler.Get(),
-                     GammaTable(), GradeTable(settings), settings.sharpen, settings.saturation);
+                     GammaTable(), GradeTable(shown), shown.sharpen, shown.saturation);
         }
         // The menu, the counters and the screenshot key, over the picture.
         Overlay::Initialize(g_swapChainWindow, g_device.Get(), g_context.Get());
