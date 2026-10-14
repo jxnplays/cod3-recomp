@@ -12,13 +12,41 @@ there. Nothing here is inference dressed up as fact unless it says so.
 
 RAM hit 99.2% used with the client running (0.26 GB free of 31.85 GB) and the
 PC was hard locking up. The client was killed (`taskkill /F /IM CoD3.exe`);
-memory recovered to 4.38 GB free. **Standing rule from the user: if PC memory
-exceeds 90%, throttle.** Do not launch the client while the machine is already
-under pressure, and watch free memory before and during long scripted runs.
+memory recovered.
 
-The client itself allocates around 512 MB, so the pressure came from running
-several stacked launches during the `ps2` investigation plus the build's
-`--parallel 4` LLVM processes. Treat those as a pair, not as separate things.
+**Correction to the obvious reading:** the client was not the cause. The user
+later established that a **sibling agent working on `mws&box` in another
+project was using 25 GB** at the same time. The client only ever allocated
+around 512 MB. Do not blame the client first next time — check what else is
+running.
+
+The user's standing rule, now enforced rather than remembered: **this session
+is capped at 15 GB and the machine must not pass 90% RAM.** See
+[`docs/MEMORY.md`](MEMORY.md) and run long jobs through
+`scripts/limited.ps1`, which samples every second and kills the process tree
+on either trigger.
+
+### The guard almost lied, and that is the part worth keeping
+
+The first implementation used a Windows job object with
+`JOB_OBJECT_LIMIT_JOB_MEMORY` — the correct tool. It reported success and
+enforced nothing:
+
+| run | result |
+|---|---|
+| python told to allocate, no limit | reached **24.3 GB** |
+| same process, 2 GB job "limit" | reached **158 GB** |
+| same process, the watchdog | stopped at **91.9%**, 6.8 GB free after |
+
+`SetInformationJobObject` returned `TRUE` and the limit read back as `0`,
+because the agent harness already runs everything inside a job object and
+Windows drops the limit on a nested one. The script now **reads the limit
+straight back and refuses to start if it did not stick** — a silently
+ineffective guard is worse than none, because it looks enforced.
+
+A real rebuild of `CoD3.exe` under the watchdog peaked at 9126 MB (28%) and
+was **not** killed, which matters as much as the enforcement test: a limit
+that kills ordinary builds gets switched off within a day.
 
 ---
 
@@ -214,6 +242,12 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliar
 **`--parallel 4`, never 16** — 16 exhausts 32 GB RAM with
 `LLVM ERROR: out of memory`, and given the memory problem that just cost us,
 this matters more than it used to.
+
+Builds and long client runs go through `scripts/limited.ps1`, which enforces
+the 15 GB / 90% ceiling and kills the process tree if it is crossed. Build it
+through `-Cmd`, or through `-Exe` plus `-ArgumentList` when a path has spaces
+— `cmd /c` splits `C:\Users\Jett Owens\...` and the program then tries to
+open a file called `C:\Users\Jett`.
 
 Multi-line commit messages must go through `git commit -F <file>`. Passing
 `-m` with a multi-line string from PowerShell splits it into a hundred bogus
