@@ -106,9 +106,6 @@ jobs:
           if ($ninja) { Write-Host "ninja: $($ninja.FullName)"; "ninja_dir=$($ninja.DirectoryName)" >> $env:GITHUB_OUTPUT }
           else { Write-Host 'ninja not inside Visual Studio; will use PATH' }
 
-      # XenonRecomp and XenonAnalyse only. CoD3Scan and PpcAsm are separate
-      # CMake projects under tools/ and are not wired into this build; adding
-      # them is the obvious next step for whoever wants the job to cover more.
       - name: Build XenonRecomp and XenonAnalyse
         shell: pwsh
         env:
@@ -136,3 +133,70 @@ jobs:
           name: tools
           path: tools/build/**/XenonRecomp.exe
           if-no-files-found: warn
+
+  # PpcAsm and XenosDis, which are built from the same root CMakeLists as the
+  # game and need no game data.
+  #
+  # They were never compiled by anything but a local build, so a syntax error
+  # or a bad include in either reached main uncaught - the kind of thing this
+  # repository's own review process kept having to find by reading instead.
+  #
+  # CoD3Host is deliberately NOT here and cannot be: 20 of its 53 sources
+  # include the generated headers under CoD3RecompLib/ppc, which are
+  # XenonRecomp's output and need the player's own default.xex. Building it
+  # would mean shipping or synthesising game code, which this repository does
+  # not do. What can be checked without game data is checked here.
+  analysis_tools:
+    name: Analysis tools build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Pin LLVM
+        shell: pwsh
+        run: |
+          choco install llvm --version=20.1.8 -y --no-progress
+          if (-not (Test-Path 'C:\Program Files\LLVM\bin\clang-cl.exe')) { throw "clang-cl not found after install" }
+          clang-cl --version
+
+      - name: Locate Visual Studio, CMake and Ninja
+        id: env
+        shell: pwsh
+        run: |
+          $vcvars = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\VC\Auxiliary\Build\vcvars64.bat' -ErrorAction SilentlyContinue) |
+                     Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $vcvars) { throw 'vcvars64.bat not found; is Visual Studio on this runner?' }
+          "vcvars=$vcvars" >> $env:GITHUB_OUTPUT
+
+          $cmake = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' -ErrorAction SilentlyContinue) |
+                    Sort-Object FullName -Descending | Select-Object -First 1
+          $ninja = @(Get-ChildItem 'C:\Program Files*\Microsoft Visual Studio\**\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe' -ErrorAction SilentlyContinue) |
+                    Sort-Object FullName -Descending | Select-Object -First 1
+          if ($cmake) { "cmake_dir=$($cmake.DirectoryName)" >> $env:GITHUB_OUTPUT }
+          if ($ninja) { "ninja_dir=$($ninja.DirectoryName)" >> $env:GITHUB_OUTPUT }
+
+      - name: Build PpcAsm and XenosDis
+        shell: pwsh
+        env:
+          VCVARS: ${{ steps.env.outputs.vcvars }}
+          CMAKE_DIR: ${{ steps.env.outputs.cmake_dir }}
+          NINJA_DIR: ${{ steps.env.outputs.ninja_dir }}
+        run: |
+          $parts = @('C:\Program Files\LLVM\bin')
+          if ($env:CMAKE_DIR) { $parts += $env:CMAKE_DIR }
+          if ($env:NINJA_DIR) { $parts += $env:NINJA_DIR }
+          $env:PATH = ($parts -join ';') + ';' + $env:PATH
+
+          # The root project also pulls in the recompiled library, which is
+          # not built here; asking for the two named targets is what keeps it
+          # out of the way.
+          $inner = "cmake -S . -B build-tools -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl && cmake --build build-tools --target PpcAsm XenosDis --parallel 2"
+          & cmd /c "`"$($env:VCVARS)`" >nul 2>&1 && $inner"
+          if ($LASTEXITCODE -ne 0) { throw "the analysis tools failed to build (exit $LASTEXITCODE)" }
+
+          foreach ($exe in @('build-tools/PpcAsm/PpcAsm.exe', 'build-tools/XenosDis/XenosDis.exe')) {
+            if (-not (Test-Path $exe)) { throw "$exe was not produced" }
+            Write-Host "$exe built"
+          }
