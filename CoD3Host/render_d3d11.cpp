@@ -1156,7 +1156,13 @@ namespace
             // letterboxed, which needs the title's field of view to have
             // widened to match; SeeAspectMode() is where that is reported.
             const float aspect = (settings.aspectMode == 1 && clientHeight > 0)
-                ? float(clientWidth) / float(clientHeight)
+                // The same sixteen-by-nine floor Render::VideoMode applies.
+                // Without it the two disagree: that one reports sixteen by
+                // nine for a window taller than that, so the title's frame
+                // would be sixteen by nine while this stretched it to the
+                // window - about eleven percent on a sixteen-by-ten window
+                // and thirty on a four-by-three one.
+                ? std::max(float(clientWidth) / float(clientHeight), 16.0f / 9.0f)
                 : 16.0f / 9.0f;
             float width = float(clientWidth), height = width / aspect;
             if (height > clientHeight) { height = float(clientHeight); width = height * aspect; }
@@ -1267,6 +1273,33 @@ namespace Render
     // "undefined symbol: Render::SwapChainWidth" at link time.
     int SwapChainWidth() { return g_swapChainWidth; }
     int SwapChainHeight() { return g_swapChainHeight; }
+    int ClientWidth() { return g_clientWidth.load(); }
+    int ClientHeight() { return g_clientHeight.load(); }
+
+    void VideoMode(unsigned& outWidth, unsigned& outHeight)
+    {
+        outWidth = 1280;
+        outHeight = 720;
+
+        if (Settings::Get().aspectMode != 1) return;
+        const int clientWidth = ClientWidth();
+        const int clientHeight = ClientHeight();
+        if (clientWidth <= 0 || clientHeight <= 0) return;
+
+        // Widened only. The console's aspect is baked into the title's own
+        // layout, and a window taller than sixteen by nine is a case worth
+        // measuring rather than guessing at - the present path has to agree
+        // with this one or the picture is stretched.
+        const int64_t sixteenNine = int64_t(clientHeight) * 16 / 9;
+        if (int64_t(clientWidth) <= sixteenNine) return;
+
+        const int64_t scaled = int64_t(outHeight) * clientWidth / clientHeight;
+        // Clamped rather than truncated. A truncation would take a value past
+        // 2^32 and wrap, handing the title a mode of a billion pixels wide.
+        const int64_t capped = scaled > 65535 ? 65535 : scaled;
+        unsigned width = unsigned(capped < 1280 ? 1280 : capped);
+        outWidth = width & ~1u;   // even, so the view does not wobble on a drag
+    }
 }
 
 // --- freed guest memory ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 // is bookkeeping the guest never observes.
 
 #include "kernel.h"
+#include "render.h"   // Render::VideoMode, so this reports the same mode as the others
 #include "sampler.h"
 #include "scheduler.h"
 #include <chrono>
@@ -152,9 +153,16 @@ PPC_FUNC(__imp__XGetVideoMode)
     const uint32_t mode = ctx.r3.u32;
     if (mode == 0) return;
 
+    // The same mode the other two report. This one was left behind when the
+    // other two were merged into Render::VideoMode, and it is the one the
+    // title may well compute its projection from - so with a wider window the
+    // title was seeing a wider mode from VdQueryVideoMode and 1280x720 from
+    // here, which is exactly the disagreement the merge was meant to stop.
+    unsigned width = 0, height = 0;
+    Render::VideoMode(width, height);
     memset(Guest::Ptr(mode), 0, 48);
-    Guest::Write32(base, mode + 0x00, 1280);        // width
-    Guest::Write32(base, mode + 0x04, 720);         // height
+    Guest::Write32(base, mode + 0x00, width);
+    Guest::Write32(base, mode + 0x04, height);
     Guest::Write32(base, mode + 0x08, 0);           // not interlaced
     Guest::Write32(base, mode + 0x0C, 1);           // widescreen
     Guest::Write32(base, mode + 0x10, 1);           // high definition

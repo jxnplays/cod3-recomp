@@ -36,6 +36,24 @@ namespace Render
     int SwapChainWidth();
     int SwapChainHeight();
 
+    // The drawable size of the window, as the window reports it. Set when the
+    // window is created and on every resize, and atomic - unlike
+    // SwapChainWidth, which is only assigned once the swap chain exists and
+    // so reads zero until the title's first present. The video mode has to be
+    // right on the title's *first* query, which necessarily precedes that.
+    int ClientWidth();
+    int ClientHeight();
+
+    // The mode the title is told about, in pixels: 1280x720 unless the player
+    // wants the window's own shape and it is wider than sixteen by nine.
+    //
+    // One function, on purpose. It was duplicated across VdQueryVideoMode,
+    // VdGetCurrentDisplayInformation and XGetVideoMode, they drifted, and the
+    // title saw two different answers - which put the HUD back where the bug
+    // it replaced had left it. Everything that reports a mode goes through
+    // here so that cannot happen again.
+    void VideoMode(unsigned& outWidth, unsigned& outHeight);
+
     // A draw from the command stream: the initiator word, and for an indexed
     // draw the guest address of the indices and their size word.
     void Draw(uint32_t initiator, uint32_t indexBase, uint32_t indexWord);

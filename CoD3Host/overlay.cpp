@@ -515,7 +515,21 @@ namespace
                     a.textureQuality != b.textureQuality ||
                     a.anisotropy != b.anisotropy ||
                     a.resolutionWidth != b.resolutionWidth ||
-                    a.resolutionHeight != b.resolutionHeight;
+                    a.resolutionHeight != b.resolutionHeight ||
+                    // These nine were missed the first time this list replaced
+                    // the memcmp, and a missing field is worse than the
+                    // padding bytes it replaced: Apply stays greyed out, the
+                    // edit is thrown away on the next open, and the setting
+                    // silently never takes.
+                    a.renderer != b.renderer ||
+                    a.resolutionScale != b.resolutionScale ||
+                    a.textureFilter != b.textureFilter ||
+                    a.aimBlur != b.aimBlur ||
+                    a.consoleDepth != b.consoleDepth ||
+                    a.nativeCommands != b.nativeCommands ||
+                    a.watchWrites != b.watchWrites ||
+                    a.fpsOverlay != b.fpsOverlay ||
+                    a.statsOverlay != b.statsOverlay;
                 for (int i = 0; i < Settings::ActionCount; i++)
                     if (a.keys[i] != b.keys[i]) dirty = true;
             }

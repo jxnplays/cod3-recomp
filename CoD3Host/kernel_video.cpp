@@ -1487,38 +1487,6 @@ PPC_FUNC(__imp__VdSwap)
 
 // --- Display queries -------------------------------------------------------
 
-// The mode the title is told about, in pixels.
-//
-// 1280x720 is sixteen by nine: the console's own shape, and what the title
-// computes its projection and its HUD layout from. On a window wider than
-// that, both of those want the window's shape instead - the field of view
-// so more world is visible, and the HUD so it sits against the real edges.
-//
-// Kept even so the view does not wobble by a pixel as the window is dragged,
-// and never below 1280x720. Both call sites go through here on purpose: when
-// these were written separately they drifted, and the HUD was laid out
-// against a different size from the world.
-static void CurrentVideoMode(uint32_t& outWidth, uint32_t& outHeight)
-{
-    outWidth = 1280;
-    outHeight = 720;
-
-    if (Settings::Get().aspectMode != 1) return;
-    const int clientWidth = Render::SwapChainWidth();
-    const int clientHeight = Render::SwapChainHeight();
-    if (clientWidth <= 0 || clientHeight <= 0) return;
-
-    // Only widen. Taller-than-sixteen-by-nine windows are left alone rather
-    // than guessed at: the console's aspect is baked into the title's own
-    // layout, and widening is the case worth getting right.
-    const int64_t sixteenNine = int64_t(clientHeight) * 16 / 9;
-    if (int64_t(clientWidth) <= sixteenNine) return;
-
-    uint32_t width = uint32_t(int64_t(outHeight) * clientWidth / clientHeight);
-    if (width < 1280) width = 1280;
-    outWidth = width & ~1u;   // even
-}
-
 // VOID VdQueryVideoMode(X_VIDEO_MODE* mode)
 PPC_FUNC(__imp__VdQueryVideoMode)
 {
@@ -1528,8 +1496,8 @@ PPC_FUNC(__imp__VdQueryVideoMode)
 
     // The same mode XGetVideoMode reports, so the title never sees the two
     // disagree.
-    uint32_t width = 0, height = 0;
-    CurrentVideoMode(width, height);
+    unsigned width = 0, height = 0;
+    Render::VideoMode(width, height);
     memset(Guest::Ptr(mode), 0, 48);
     Guest::Write32(base, mode + 0x00, width);
     Guest::Write32(base, mode + 0x04, height);
@@ -1563,8 +1531,8 @@ PPC_FUNC(__imp__VdGetCurrentDisplayInformation)
     // buffer while the world was fitted to a letterboxed box - and with the
     // window filled, the HUD drifted away from the edges it was laid out
     // for. One function, so the two can never disagree again.
-    uint32_t width = 0, height = 0;
-    CurrentVideoMode(width, height);
+    unsigned width = 0, height = 0;
+    Render::VideoMode(width, height);
     memset(Guest::Ptr(information), 0, 0x58);
     Guest::Write32(base, information + 0x00, width);
     Guest::Write32(base, information + 0x04, height);
