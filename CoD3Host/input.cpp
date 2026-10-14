@@ -145,6 +145,23 @@ namespace
         outX = 0;
         outY = 0;
 
+        // Put the pointer back in the middle while it steers.
+        //
+        // It used to be clipped to the window and warped to the centre once,
+        // when it was taken. Then it moved outwards with every flick, reached
+        // the clip boundary, and stopped moving while the stick kept turning
+        // the other way - which is the jank: the aiming ran out before the
+        // mouse did. Re-centring every time this is read keeps it available
+        // for as long as the hand can move.
+        //
+        // Safe with raw input, which is what the movement is read from: raw
+        // reports how far the device moved, not where the pointer ended up,
+        // so warping the pointer produces no movement of its own.
+        if (g_mouseHeld.load())
+        {
+            SetCursorPos(g_centre.x, g_centre.y);
+        }
+
         // The mouse's own movement is taken whether it is used or not, so
         // that what piled up while the menu was open is not a jump the
         // moment the window takes the mouse back.

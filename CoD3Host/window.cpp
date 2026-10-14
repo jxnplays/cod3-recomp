@@ -276,6 +276,21 @@ namespace
 
         g_window.store(nullptr);
         DestroyWindow(window);
+
+        // Closing the window has to end the process. The guest runs on from
+        // _xstart and does not return, and nothing was watching for this
+        // loop to stop: clicking the X on the window closed the window and
+        // left the game running with no window, still spending CPU, which
+        // looked like the client had hung.
+        //
+        // Guest::Shutdown stops the worker threads before the process goes, so
+        // they do not run on into a half-torn-down guest. Nothing is flushed
+        // here - the log copier is a detached thread and the process is about
+        // to end it anyway, which is the same thing the title's own exit does.
+        printf("\nThe window was closed; stopping the guest and exiting.\n");
+        fflush(stdout);
+        Guest::Shutdown();
+        Kernel::Exit(0);
     }
 }
 
