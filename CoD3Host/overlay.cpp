@@ -137,6 +137,41 @@ namespace
     bool g_editLoaded = false;
     float g_fontScale = 1.0f;
 
+    // What a pad button for an action is called, drawn beside its keybind.
+    //
+    // The title's own bindings, from config/xenon_a.cfg: RT is attack, LT
+    // holds the sights, LB throws a grenade and is also the sprint, RB is the
+    // smoke, R3 is melee, L3 the binoculars, SQUARE use, TRIANGLE next
+    // weapon. Those are what this port already does, so labelling them with
+    // the same buttons describes the behaviour rather than decorating it.
+    //
+    // Anything the pad does not do gets nothing drawn. A row of empty icons
+    // beside half the bindings would read as the binding being broken rather
+    // than the pad having no such button.
+    void PadEquivalent(int action, int iconSet)
+    {
+        static const char* const kFor[] =
+        {
+            "r2",    // Fire       - RT is attack
+            "l2",    // Aim        - LT holds the sights
+            "a",     // Jump
+            nullptr, // Crouch     - held, no single button
+            "x",     // Use        - SQUARE
+            nullptr, // Reload     - held alongside use on a pad
+            "y",     // Weapon     - TRIANGLE, next weapon
+            "r3",    // Melee      - R3
+            "l1",    // Sprint     - LB
+            "l1",    // Grenade    - LB, single shot
+            "r1",    // Smoke      - RB
+            nullptr, // Objectives - TAB has no button
+            "start", // Pause
+            nullptr, nullptr, nullptr, nullptr,   // the stick
+        };
+        if (action < 0 || action >= int(sizeof(kFor) / sizeof(kFor[0]))) return;
+        if (kFor[action] == nullptr) return;
+        ButtonIcons::Draw(iconSet, kFor[action], 18.0f * g_fontScale);
+    }
+
     // The frame counter: swaps in the last second.
     std::atomic<uint64_t> g_frames{ 0 };
     uint64_t g_framesAtTick = 0;
@@ -391,6 +426,13 @@ namespace
                             const bool waiting = g_capturing == i;
                             if (ImGui::Button(waiting ? "Press a key... (Esc: cancel)" : Settings::KeyName(g_edit.keys[i]), ImVec2(-1, 0)))
                                 g_capturing = waiting ? -1 : i;
+                            // Beside the button, what the equivalent pad button is called in
+                            // the set the player chose. A keybind row that said only
+                            // "Mouse 1" gave no hint that the same action has a pad button,
+                            // which is the thing a controller player is looking for. Nothing
+                            // is drawn when there is no equivalent or no icons, rather than
+                            // reserving space for an icon that will not appear.
+                            if (!waiting) PadEquivalent(i, applied.buttonIcons);
                             ImGui::PopID();
                         }
                         ImGui::EndTable();
