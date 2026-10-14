@@ -889,14 +889,30 @@ PPC_FUNC(__imp__XamLoaderLaunchTitle)
     }
     printf(", flags 0x%08X, from 0x%08X.\n", ctx.r4.u32, uint32_t(ctx.lr));
 
-    // Itself: the next mission. Started again, and this process ends.
+    // Itself: the next mission, or the multiplayer title. Started again, and this
+    // process ends.
+    //
+    // This used to relaunch only for default.xex and shut down for anything
+    // else, which is why choosing Multiplayer from the main menu closed the
+    // game: COD3 asks for codmp_xenonf.xex, which is a different file but the
+    // same request - the title asking to be run again as something else. The
+    // file is in the installed game, the relaunch path is the same one, and
+    // refusing it here meant the title's own "switch to multiplayer" path had
+    // nowhere to go.
+    //
+    // The dashboard is still refused: a title asking for that has usually just
+    // decided something is fatally wrong, and the call chain says what. There
+    // is no dashboard to go to here.
     std::string lower(path);
     for (char& c : lower) c = char(tolower(static_cast<unsigned char>(c)));
-    if (lower.size() >= 11 && lower.compare(lower.size() - 11, 11, "default.xex") == 0)
+    const bool isDashboard = path[0] == 0;
+    const bool wantsAnotherTitle =
+        lower.size() >= 11 && lower.compare(lower.size() - 11, 11, ".xex") == 0;
+    if (wantsAnotherTitle && !isDashboard)
     {
         if (Relaunch())
         {
-            printf("Relaunched for the next mission; this process ends.\n");
+            printf("Relaunched for \"%s\"; this process ends.\n", path);
             fflush(stdout);
             Log::Finish();
             ExitProcess(0);

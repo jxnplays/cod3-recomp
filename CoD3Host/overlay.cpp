@@ -137,41 +137,6 @@ namespace
     bool g_editLoaded = false;
     float g_fontScale = 1.0f;
 
-    // What a pad button for an action is called, drawn beside its keybind.
-    //
-    // The title's own bindings, from config/xenon_a.cfg: RT is attack, LT
-    // holds the sights, LB throws a grenade and is also the sprint, RB is the
-    // smoke, R3 is melee, L3 the binoculars, SQUARE use, TRIANGLE next
-    // weapon. Those are what this port already does, so labelling them with
-    // the same buttons describes the behaviour rather than decorating it.
-    //
-    // Anything the pad does not do gets nothing drawn. A row of empty icons
-    // beside half the bindings would read as the binding being broken rather
-    // than the pad having no such button.
-    void PadEquivalent(int action, int iconSet)
-    {
-        static const char* const kFor[] =
-        {
-            "r2",    // Fire       - RT is attack
-            "l2",    // Aim        - LT holds the sights
-            "a",     // Jump
-            nullptr, // Crouch     - held, no single button
-            "x",     // Use        - SQUARE
-            nullptr, // Reload     - held alongside use on a pad
-            "y",     // Weapon     - TRIANGLE, next weapon
-            "r3",    // Melee      - R3
-            "l1",    // Sprint     - LB
-            "l1",    // Grenade    - LB, single shot
-            "r1",    // Smoke      - RB
-            nullptr, // Objectives - TAB has no button
-            "start", // Pause
-            nullptr, nullptr, nullptr, nullptr,   // the stick
-        };
-        if (action < 0 || action >= int(sizeof(kFor) / sizeof(kFor[0]))) return;
-        if (kFor[action] == nullptr) return;
-        ButtonIcons::Draw(iconSet, kFor[action], 18.0f * g_fontScale);
-    }
-
     // The frame counter: swaps in the last second.
     std::atomic<uint64_t> g_frames{ 0 };
     uint64_t g_framesAtTick = 0;
@@ -361,57 +326,6 @@ namespace
                     ImGui::Checkbox("Controller support", &g_edit.controller);
                     ImGui::SameLine();
                     ImGui::TextDisabled("(the pad's own icons and menu navigation)");
-
-                    // Which buttons to draw, and a preview of them. The choice
-                    // is the art and nothing else: both sets are stored under
-                    // the same logical names, so the code above never asks
-                    // which one it is drawing.
-                    {
-                        static const char* const kSetNames[] = {
-                            "Xbox (Xbox Series)",
-                            "PlayStation (DualSense)",
-                            "Letters only (A, B, X, Y)",
-                        };
-                        ImGui::TextUnformatted("Button icons");
-                        ImGui::SameLine(140.0f);
-                        if (ImGui::BeginCombo("##buttonsets", kSetNames[g_edit.buttonIcons], 3))
-                        {
-                            for (int i = 0; i < 3; i++)
-                                if (ImGui::Selectable(kSetNames[i], g_edit.buttonIcons == i)) g_edit.buttonIcons = i;
-                            ImGui::EndCombo();
-                        }
-                        // On its own line. The window is 620 wide and this text did not
-                        // fit beside the combo, which pushed it off the edge and
-                        // made the choice look broken.
-                        ImGui::TextDisabled("PlayStation by default - most players of a PC build hold one.");
-
-                        // The icons themselves, so the choice is made by looking
-                        // at it rather than by reading a name. This row wraps:
-                        // ten icons on one line do not fit, and running off the
-                        // side is worse than two shorter rows.
-                        if (g_edit.buttonIcons < ButtonIcons::Count())
-                        {
-                            const float size = 22.0f * g_fontScale;
-                            static const char* const kShow[] = { "a", "b", "x", "y", "l1", "r1", "l2", "r2", "start", "back" };
-                            bool any = false;
-                            for (const char* logical : kShow)
-                            {
-                                if (ImGui::GetContentRegionAvail().x < size * 2.0f) ImGui::NewLine();
-                                if (ButtonIcons::Draw(g_edit.buttonIcons, logical, size)) any = true;
-                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  -  %s", logical, kSetNames[g_edit.buttonIcons]);
-                                ImGui::SameLine();
-                            }
-                            ImGui::NewLine();
-                            if (!any)
-                                ImGui::TextDisabled("No icons found. The buttons\\ folder must sit beside CoD3.exe.");
-                            else
-                                ImGui::TextDisabled("hover a button for its name");
-                        }
-                        else
-                        {
-                            ImGui::TextDisabled("A     B     X     Y     L1     R1     (letters, no images)");
-                        }
-                    }
                     ImGui::Separator();
                     ImGui::TextUnformatted("Keys");
                     if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_SizingStretchProp))
@@ -426,13 +340,6 @@ namespace
                             const bool waiting = g_capturing == i;
                             if (ImGui::Button(waiting ? "Press a key... (Esc: cancel)" : Settings::KeyName(g_edit.keys[i]), ImVec2(-1, 0)))
                                 g_capturing = waiting ? -1 : i;
-                            // Beside the button, what the equivalent pad button is called in
-                            // the set the player chose. A keybind row that said only
-                            // "Mouse 1" gave no hint that the same action has a pad button,
-                            // which is the thing a controller player is looking for. Nothing
-                            // is drawn when there is no equivalent or no icons, rather than
-                            // reserving space for an icon that will not appear.
-                            if (!waiting) PadEquivalent(i, applied.buttonIcons);
                             ImGui::PopID();
                         }
                         ImGui::EndTable();
@@ -492,10 +399,6 @@ void Overlay::Initialize(void* hwnd, ID3D11Device* device, ID3D11DeviceContext* 
     g_hwnd = static_cast<HWND>(hwnd);
     g_device = device;
     g_context = context;
-    // The button icons are made with this device rather than one taken out of
-    // ImGui's backend, which is private in this version of imgui. Handing it
-    // over here is the only place the device is guaranteed to exist.
-    ButtonIcons::SetDevice(device, context);
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();

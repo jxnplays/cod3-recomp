@@ -97,7 +97,6 @@ add_executable(CoD3 WIN32
     "overlay.cpp"
     "mods.cpp"
     "gamepad_nav.cpp"
-    "button_icons.cpp"
     "../thirdparty/imgui/imgui.cpp"
     "../thirdparty/imgui/imgui_draw.cpp"
     "../thirdparty/imgui/imgui_tables.cpp"
@@ -120,22 +119,7 @@ add_executable(CoD3 WIN32
 # readable. WIN32 above is overridden here deliberately.
 set_target_properties(CoD3 PROPERTIES WIN32_EXECUTABLE OFF)
 
-# The controller button icons, beside the executable where the host looks for
-# them. Copied rather than referenced from the source tree so a build tree can
-# be moved or shipped on its own, and so the path the host uses at run time is
-# the same on every machine rather than a path that only exists next to a
-# checkout.
-#
-# A dependency on the directory rather than on each file: adding a set is a
-# matter of dropping a folder in assets/buttons/ and rebuilding, with no list
-# here to keep up to date. The icons are small, and the copy is shallow.
-set(COD3_BUTTONS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../assets/buttons")
-if (EXISTS "${COD3_BUTTONS_SRC}")
-    add_custom_command(TARGET CoD3 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${COD3_BUTTONS_SRC}" "$<TARGET_FILE_DIR:CoD3>/buttons"
-        COMMENT "Copying controller button icons beside CoD3.exe")
-endif()
+
 
 target_link_libraries(CoD3 PRIVATE
     CoD3RecompLib   # the recompiled game code

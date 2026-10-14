@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <string>
 
-#include "button_icons.h"
 
 struct ID3D11Device;
 struct ID3D11DeviceContext;

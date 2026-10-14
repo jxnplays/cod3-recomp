@@ -237,6 +237,11 @@ bool Overlay::DrawModsTab()
                 // value and says so.
                 if (!a.known)
                 {
+                    // Every one of these buttons is captioned "Set", so ImGui
+                    // saw sixteen widgets sharing one identifier and said so on
+                    // screen in an error panel over the menu. The row index is
+                    // what makes them distinct.
+                    ImGui::PushID(i);
                     ImGui::AlignTextToFramePadding();
                     ImGui::TextDisabled("%s", r.label);
                     ImGui::SameLine();
@@ -249,6 +254,7 @@ bool Overlay::DrawModsTab()
                         a.known = true;
                         a.value = r.minValue;
                     }
+                    ImGui::PopID();
                 }
                 else
                 {

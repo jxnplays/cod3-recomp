@@ -47,11 +47,6 @@ namespace Settings
         bool statsOverlay = false;    // the renderer's counters over the picture
         bool aimAssist = true;        // the title's own, through its config
         bool controller = true;       // read a pad when one is there
-        // Which set of button icons to draw: 0 Xbox, 1 PlayStation. Both are
-        // extracted under the same logical names, so this chooses the art and
-        // nothing else. PlayStation by default because that is what most
-        // people playing this on a PC are holding - see button_icons.cpp.
-        int buttonIcons = 1;      // 0 Xbox, 1 PlayStation, 2 letters only (no images)
         float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 3
         bool rawMouse = true;            // the mouse's own counts, not the pointer's travel
         int keys[ActionCount] = {};

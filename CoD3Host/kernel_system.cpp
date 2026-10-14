@@ -121,6 +121,13 @@ PPC_FUNC(__imp__ExGetXConfigSetting)
         return;
     }
 
+    // Every query, answered or not. The title reads button layout and region
+    // out of the dashboard's storage, so which settings it asks for is the
+    // evidence for where the glyph set comes from - not a guess from the
+    // names.
+    printf("ExGetXConfigSetting: category 0x%04X setting 0x%04X -> 0x%08X%s\n",
+           category, setting, value, known ? "" : " (not found)");
+
     if (buffer != 0 && length >= 4)
         Guest::Write32(base, buffer, value);
     if (ctx.r7.u32 != 0)
