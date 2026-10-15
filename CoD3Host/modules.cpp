@@ -47,7 +47,19 @@ namespace
         std::vector<std::pair<uint32_t, uint32_t>> exports;   // ordinal, address
     };
 
-    std::mutex g_mutex;
+    // Recursive, and it has to be.
+//
+// Contains/Lookup/LoadedName now take this lock, because Unload deletes the
+// Module underneath them otherwise. But Load holds it across ReadExports,
+// which calls Contains - so a plain std::mutex deadlocks on itself the first
+// time a module is ever loaded. That is not a theoretical concern: it is
+// exactly what happened the first time this ran, and it looks like a hang
+// rather than a crash because there is no fault, just a thread that never
+// returns.
+//
+// The two places that resolve an entry for a guest call unlock first, because
+// the guest call has to be able to re-enter; that behaviour is unchanged.
+std::recursive_mutex g_mutex;
     Module* g_loaded = nullptr;   // at most one, all levels share a base
     uint32_t g_nextHandle = 0x00080001;
 
@@ -112,7 +124,7 @@ bool Modules::Contains(uint32_t address)
     //
     // The lock is only held for the lookup, never across the guest call, so
     // re-entry is still possible and this costs nothing in the common case.
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     const Module* module = g_loaded;
     if (module == nullptr || address < module->base || address >= module->base + module->size) return false;
     return module->table[(address - module->base) / 4] != nullptr;
@@ -120,7 +132,7 @@ bool Modules::Contains(uint32_t address)
 
 PPCFunc* Modules::Lookup(uint32_t address)
 {
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     const Module* module = g_loaded;
     if (module == nullptr || address < module->base || address >= module->base + module->size)
         return nullptr;
@@ -130,7 +142,7 @@ PPCFunc* Modules::Lookup(uint32_t address)
 const char* Modules::LoadedName()
 {
     // Same reason as Lookup: this reads a pointer another thread can delete.
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     const Module* module = g_loaded;
     return module != nullptr ? module->name.c_str() : "";
 }
@@ -169,7 +181,7 @@ uint32_t Modules::Load(PPCContext& ctx, uint8_t* base, const std::string& guestP
         return 0;
     }
 
-    std::unique_lock<std::mutex> lock(g_mutex);
+    std::unique_lock<std::recursive_mutex> lock(g_mutex);
     if (g_loaded != nullptr)
     {
         printf("modules: %s is still loaded while %s is asked for; replacing it\n",
@@ -269,7 +281,7 @@ uint32_t Modules::Load(PPCContext& ctx, uint8_t* base, const std::string& guestP
 
 void Modules::Unload(PPCContext& ctx, uint8_t* base, uint32_t handle)
 {
-    std::unique_lock<std::mutex> lock(g_mutex);
+    std::unique_lock<std::recursive_mutex> lock(g_mutex);
     if (g_loaded == nullptr || g_loaded->handle != handle) return;
 
     // The DLL's main with DLL_PROCESS_DETACH, before it goes, as the loader
@@ -296,7 +308,7 @@ void Modules::Unload(PPCContext& ctx, uint8_t* base, uint32_t handle)
 
 uint32_t Modules::Export(uint32_t handle, uint32_t ordinal)
 {
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     if (g_loaded == nullptr || g_loaded->handle != handle) return 0;
     for (const auto& entry : g_loaded->exports)
         if (entry.first == ordinal) return entry.second;
