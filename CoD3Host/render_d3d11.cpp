@@ -138,7 +138,7 @@ namespace
     ComPtr<ID3D11PixelShader> g_depthOnlyPixelShader;   // the depth only mode's draws (COD3_DEPTH24)
     ComPtr<ID3D11SamplerState> g_pointSampler, g_linearSampler;
     ComPtr<ID3D11Buffer> g_quadConstants;
-    ComPtr<ID3D11Buffer> g_postConstants;   // vignette, grain and the clock (b1)
+    ComPtr<ID3D11Buffer> g_postConstants;   // vignette, grain and the clock, at b1
     ComPtr<ID3D11Texture1D> g_gammaTexture;           // the display's colour table (Gpu::DisplayGamma)
     ComPtr<ID3D11ShaderResourceView> g_gammaView;
     uint64_t g_gammaVersion = ~0ull;
@@ -306,48 +306,44 @@ namespace
         "Texture1D gammaTable : register(t1);\n"
         "float3 gamma(float3 c) { float3 at = saturate(c) * (255.0 / 256.0) + (0.5 / 256.0);"
         " return float3(gammaTable.SampleLevel(smp, at.r, 0).r, gammaTable.SampleLevel(smp, at.g, 0).g, gammaTable.SampleLevel(smp, at.b, 0).b); }\n"
-
+        "cbuffer Quad : register(b0) { float4 uvRect; float4 texel; };\n"
+        "struct V { float4 position : SV_Position; float2 uv : TEXCOORD0; };\n"
         // Everything after the console's own display table, because that is
         // where the picture is finished.
         //
-        // Vignette and grain belong in display space, not before the gamma:
-        // applied before, the gamma curve would bend them and a corner would
-        // lift again on the way out. Both default to zero, and both are skipped
-        // with a uniform branch rather than folded in, so the untouched case
-        // costs one comparison.
+        // Vignette and grain belong in display space. Applied before the
+        // gamma, the curve would bend them and a corner would lift again on
+        // the way out. Both default to zero and are skipped by a uniform
+        // branch, so the untouched case runs exactly the code it ran before.
         //
-        // post.x vignette   0..1
-        // post.y grain      0..1
-        // post.z the clock, for the grain
-        // post.w grain size, so it can be fine or coarse
+        // post.x vignette, post.y grain, post.z the clock, post.w grain size.
         "cbuffer Post : register(b1) { float4 post; };\n"
         "float3 postPass(float3 c, float2 uv, float2 lo, float2 hi)\n"
         "{\n"
-        "    float2 d = (uv - (lo + hi) * 0.5) / max((hi - lo) * 0.5, float2(1e-4, 1e-4));\n"
+        "    if (post.x <= 0.0 && post.y <= 0.0) return c;\n"
+        "    float3 v = c;\n"
         "    if (post.x > 0.0)\n"
         "    {\n"
-        // r2 is 0 at the centre and 2 at a corner, so the factor is halved on the
-        // way in: that puts the CORNER at full strength instead of halfway to
-        // it. At 0.25 the corner only reached 0.73 at a setting of 0.6, which
-        // is a darkening nobody would see - the self-check caught it.
+        // r2 is 0 at the centre and 2 at a corner, so it is halved on the way
+        // in - that puts the CORNER at full strength. At a quarter it only
+        // reached 0.73 at a setting of 0.6, which is a darkening nobody would
+        // see; the self-check caught that.
+        "        float2 d = (uv - (lo + hi) * 0.5) / max((hi - lo) * 0.5, float2(1e-4, 1e-4));\n"
         "        float r2 = dot(d, d);\n"
-        "        c *= 1.0 - post.x * saturate(r2 * 0.5) * 0.9;\n"
+        "        v *= 1.0 - post.x * saturate(r2 * 0.5) * 0.9;\n"
         "    }\n"
         "    if (post.y > 0.0)\n"
         "    {\n"
-        // A hash rather than noise, so it costs nothing to load and needs no
-        // texture. Animated from the clock: static grain reads as dirt on the
-        // screen, moving grain reads as film.
-        "        float2 p = floor(uv / max(post.w, 0.5));\n"
-        "        float h = frac(sin(dot(p, float2(12.9898, 78.233)) + post.z) * 43758.5453);\n"
-        "        c += (h - 0.5) * post.y * 0.12;\n"
+        // A hash, so it costs no texture and no bandwidth. Animated from the
+        // clock: static grain reads as dirt on the screen, moving grain reads
+        // as film.
+        "        float2 g = floor(uv / max(post.w, 0.5));\n"
+        "        float h = frac(sin(dot(g, float2(12.9898, 78.233)) + post.z) * 43758.5453);\n"
+        "        v += (h - 0.5) * post.y * 0.12;\n"
         "    }\n"
-        "    return c;\n"
+        "    return v;\n"
         "}\n"
-        "float4 presentPost(V v) : SV_Target { return float4(postPass(gamma(grade(source.Sample(smp, v.uv).rgb)), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
-        "float4 casPost(V v) : SV_Target { return float4(postPass(gamma(grade(sharpened)), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
-        "cbuffer Quad : register(b0) { float4 uvRect; float4 texel; };\n"
-        "struct V { float4 position : SV_Position; float2 uv : TEXCOORD0; };\n"
+
         "V vsmain(uint id : SV_VertexID) { V v; float2 t = float2((id << 1) & 2, id & 2);"
         " v.position = float4(t * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0); v.uv = uvRect.xy + t * uvRect.zw; return v; }\n"
         "float4 copy(V v) : SV_Target { return source.Sample(smp, v.uv); }\n"
@@ -383,11 +379,6 @@ namespace
         // only kind worth relying on for a claim this load bearing.
         "    return (texel.w == 1.0) ? t : saturate(l + (t - l) * texel.w); }\n"
         "float4 present(V v) : SV_Target { return float4(gamma(grade(source.Sample(smp, v.uv).rgb)), 1.0); }\n"
-        // The untouched case: gamma and nothing else. This is what the picture
-        // ran on before any of this existed, and it is still the default, so it
-        // is checked character for character against that version.
-        "float4 presentPlain(V v) : SV_Target { return float4(gamma(source.Sample(smp, v.uv).rgb), 1.0); }\n"
-        "float4 presentPlainPost(V v) : SV_Target { return float4(postPass(gamma(source.Sample(smp, v.uv).rgb), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
         // The untouched case. This is what the present path did before grading
         // existed, and it is selected whenever every control is at its default,
         // so a player who never opens the Colour page pays for nothing: no
@@ -396,7 +387,7 @@ namespace
         // "At its default" is decided on the host, by a comparison of the four
         // settings against their defaults, so this stays correct even though the
         // saturation identity is a branch inside grade() rather than arithmetic.
-
+        "float4 presentPlain(V v) : SV_Target { return float4(gamma(source.Sample(smp, v.uv).rgb), 1.0); }\n"
         // Contrast-adaptive sharpening, in the shape AMD's CAS uses rather
         // than its exact constants: sharpen against the local contrast, so a
         // flat sky is not ringed and a detailed wall is not overcooked.
@@ -413,56 +404,73 @@ namespace
         // reads as "blurrier", and comparing it against the centre is the
         // whole signal.
         "float3 casLuma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
-        "float4 cas(V v) : SV_Target {\n"
-        "    float2 uv = v.uv, px = texel.xy;\n"
-        "    float3 cM = source.Sample(smp, uv).rgb;\n"
-        "    float3 cN = source.Sample(smp, uv + float2(0.0, -px.y)).rgb;\n"
-        "    float3 cS = source.Sample(smp, uv + float2(0.0,  px.y)).rgb;\n"
-        "    float3 cE = source.Sample(smp, uv + float2( px.x, 0.0)).rgb;\n"
-        "    float3 cW = source.Sample(smp, uv + float2(-px.x, 0.0)).rgb;\n"
-        "    float3 cNW = source.Sample(smp, uv + float2(-px.x, -px.y)).rgb;\n"
-        "    float3 cNE = source.Sample(smp, uv + float2( px.x, -px.y)).rgb;\n"
-        "    float3 cSW = source.Sample(smp, uv + float2(-px.x,  px.y)).rgb;\n"
-        "    float3 cSE = source.Sample(smp, uv + float2( px.x,  px.y)).rgb;\n"
+        // The kernel, shared by two entry points.
+        //
+        // It has to be a function. casPost used `sharpened`, which was a local
+        // inside cas: the whole QuadSource then failed to compile, so
+        // BuiltInPrograms() returned false and PresentLocked gave up before it
+        // drew anything or touched the overlay. The game still ran, still
+        // emulated, still logged a healthy frame rate, and showed no window.
+        "float3 casSharpen(float3 cM, float3 cN, float3 cS, float3 cE, float3 cW,\n"
+        "                   float3 cNW, float3 cNE, float3 cSW, float3 cSE, float amount)\n"
+        "{\n"
         "    float3 mn = min(min(min(cN, cS), min(min(cE, cW), min(min(cNW, cNE), min(cSW, cSE)))), cM);\n"
         "    float3 mx = max(max(max(cN, cS), max(max(cE, cW), max(max(cNW, cNE), max(cSW, cSE)))), cM);\n"
-        // Why the earlier version did nothing.
+        // Unsharp against the box, attenuated by local contrast so the hard
+        // edges - where sharpening turns into a halo - get the least of it and
+        // the ordinary texture of a scene gets the most.
         //
-        // It computed `cM - (box - cM) * amount` and then clamped the result
-        // to [mn, mx]. But mn and mx are the extremes of a neighbourhood that
-        // INCLUDES cM, so on most pixels cM already is the extreme and the
-        // clamp threw the whole result away. What survived was measured at
-        // about seven percent more high-frequency energy - real, and invisible.
+        // The clamp has to have a margin. The first version clamped to [mn, mx]
+        // and mn/mx include cM, so on most pixels cM already was the extreme
+        // and the clamp discarded the result: about seven percent more detail,
+        // which is real and invisible.
         //
-        // Two things were wrong with it: the clamp had no margin, so it
-        // bounded the pass to nothing, and the multiplier was one, so there
-        // was nothing to see even without the clamp.
+        // The margin is a fixed four percent rather than a fraction of the
+        // local range - a fifth of the range let a hard edge peak at 0.86
+        // where the bright side was 0.45.
         //
-        // What this does instead:
-        //
-        //   - unsharp against the box, with a multiplier that actually moves
-        //     the picture at the low end of the slider
-        //   - attenuate by local contrast, so the hard edges - where sharpening
-        //     turns into a bright halo - get the least of it and the ordinary
-        //     texture of a scene, which is most of one, gets the most
-        //   - clamp to the neighbourhood's own extremes PLUS a margin, so the
-        //     pass can overshoot a little and stop there
-        //
-        // The contrast is one scalar from the luma of the extremes. Per
-        // channel it would sharpen a saturated edge by three different amounts
-        // and fringe it, which is what coloured fringes on an edge are.
+        // The contrast is one scalar from the luma of the extremes; per channel
+        // it would sharpen a saturated edge three different amounts and fringe
+        // it.
         "    float3 box = (cM * 4.0 + (cN + cS + cE + cW) * 2.0 + (cNW + cNE + cSW + cSE)) * (1.0 / 16.0);\n"
         "    float range = casLuma(mx) - casLuma(mn);\n"
         "    float allow = 1.0 / (1.0 + range * 6.0);\n"
-        "    float3 sharpened = cM + (cM - box) * (texel.z * 5.0 * allow);\n"
-        // The margin is a fixed four percent, NOT a fraction of the local
-        // range. A fifth of the range was the first attempt and on a hard edge
-        // - where the range is most of the scale - that allowed an overshoot
-        // of nearly half the picture: the self-check measured a bright line
-        // peaking at 0.86 where the bright side was 0.45. A halo is judged
-        // against the whole scale, so the bound has to be too.
-        "    sharpened = clamp(sharpened, mn - 0.04, mx + 0.04);\n"
-"    return float4(gamma(grade(sharpened)), 1.0); }\n"
+        "    float3 sharpened = cM + (cM - box) * (amount * 5.0 * allow);\n"
+        "    return clamp(sharpened, mn - 0.04, mx + 0.04);\n"
+        "}\n"
+        // The nine taps, returned rather than written through out parameters.
+        //
+        // And the reason this string will not compile is worth naming, because
+        // it cost an evening: `out` is a RESERVED KEYWORD in HLSL. It was
+        // being used as a local's name in postPass. One reserved word as a
+        // variable takes down every entry point in the string at once, and the
+        // symptom is a program that boots, emulates, logs a healthy frame
+        // rate and shows no window.
+        "struct Cas3 { float3 m; float3 n; float3 s; float3 e; float3 w; float3 nw; float3 ne; float3 sw; float3 se; };\n"
+        "Cas3 casTaps(float2 uv)\n"
+        "{\n"
+        "    float2 px = texel.xy;\n"
+        "    Cas3 t;\n"
+        "    t.m = source.Sample(smp, uv).rgb;\n"
+        "    t.n = source.Sample(smp, uv + float2(0.0, -px.y)).rgb;\n"
+        "    t.s = source.Sample(smp, uv + float2(0.0,  px.y)).rgb;\n"
+        "    t.e = source.Sample(smp, uv + float2( px.x, 0.0)).rgb;\n"
+        "    t.w = source.Sample(smp, uv + float2(-px.x, 0.0)).rgb;\n"
+        "    t.nw = source.Sample(smp, uv + float2(-px.x, -px.y)).rgb;\n"
+        "    t.ne = source.Sample(smp, uv + float2( px.x, -px.y)).rgb;\n"
+        "    t.sw = source.Sample(smp, uv + float2(-px.x,  px.y)).rgb;\n"
+        "    t.se = source.Sample(smp, uv + float2( px.x,  px.y)).rgb;\n"
+        "    return t;\n"
+        "}\n"
+        "float4 cas(V v) : SV_Target {\n"
+        "    Cas3 t = casTaps(v.uv);\n"
+        "    return float4(gamma(grade(casSharpen(t.m, t.n, t.s, t.e, t.w, t.nw, t.ne, t.sw, t.se, texel.z))), 1.0);\n"
+        "}\n"
+        "float4 casPost(V v) : SV_Target {\n"
+        "    Cas3 t = casTaps(v.uv);\n"
+        "    float3 sh = casSharpen(t.m, t.n, t.s, t.e, t.w, t.nw, t.ne, t.sw, t.se, texel.z);\n"
+        "    return float4(postPass(gamma(grade(sh)), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0);\n"
+        "}\n"
         // FXAA 3.11, the quality path, on the presented picture: the edges
         // the title's own picture has, softened by the luma along them.
         "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
@@ -507,7 +515,13 @@ namespace
         "    float subFinal = (-2.0 * sub + 3.0) * sub * sub; subFinal = subFinal * subFinal * 0.75;\n"
         "    finalOffset = max(finalOffset, subFinal);\n"
         "    float2 finalUv = uv; if (horizontal) finalUv.y += finalOffset * step; else finalUv.x += finalOffset * step;\n"
-        "    return float4(gamma(grade(source.Sample(smp, finalUv).rgb)), 1.0); }\n";
+        "    return float4(gamma(grade(source.Sample(smp, finalUv).rgb)), 1.0); }\n"
+        // The post entry points are last because HLSL needs a thing declared
+        // before it is used, and these call grade() and postPass, which are
+        // both defined above them but nowhere near where they were written.
+        "float4 presentPost(V v) : SV_Target { return float4(postPass(gamma(grade(source.Sample(smp, v.uv).rgb)), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
+        "float4 presentPlainPost(V v) : SV_Target { return float4(postPass(gamma(source.Sample(smp, v.uv).rgb), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
+        ;
 
     // The copy of a multisampled target, which has no sampler: the texel
     // by position, a colour as the average of its samples, a depth as its
@@ -617,7 +631,7 @@ namespace
                   ID3D11PixelShader* program, ID3D11SamplerState* sampler, ID3D11ShaderResourceView* second = nullptr,
                    ID3D11ShaderResourceView* third = nullptr, float sharpenAmount = 0.0f,
                    float saturationAmount = 1.0f, float vignetteAmount = 0.0f,
-                   float grainAmount = 0.0f, float grainClock = 0.0f, float grainSize = 1.0f)
+                   float grainAmount = 0.0f, float grainClock = 0.0f)
     {
         if (!BuiltInPrograms()) return;
         // constants[6] and constants[7] carry the sharpening amount and the
@@ -627,11 +641,11 @@ namespace
         const float constants[8] = { x0 / sourceWidth, y0 / sourceHeight, width / sourceWidth, height / sourceHeight,
                                      1.0f / sourceWidth, 1.0f / sourceHeight, sharpenAmount, saturationAmount };
         g_context->UpdateSubresource(g_quadConstants.Get(), 0, nullptr, constants, 0, 0);
-        // b1. Uploaded every draw like b0, which is cheap - four floats - and
-        // it carries the clock, so it cannot be a constant.
+        // b1. Uploaded every draw like b0 - four floats - and it carries the
+        // clock, so it cannot be a constant.
         if (g_postConstants)
         {
-            const float fx[4] = { vignetteAmount, grainAmount, grainClock, grainSize };
+            const float fx[4] = { vignetteAmount, grainAmount, grainClock, 1.0f };
             g_context->UpdateSubresource(g_postConstants.Get(), 0, nullptr, fx, 0, 0);
             g_context->PSSetConstantBuffers(1, 1, g_postConstants.GetAddressOf());
         }
@@ -1557,26 +1571,25 @@ namespace
             }
             const bool graded = shown.contrast != 1.0f || shown.saturation != 1.0f ||
                                 shown.temperature != 0.0f || shown.brightness != 0.0f;
-            const bool cas = shown.sharpen > 0.0f && g_casPixelShader;
-            ID3D11PixelShader* program = g_presentPixelShader.Get();
-            if (cas) program = g_casPixelShader.Get();
-            else if (fxaa) program = g_fxaaPixelShader.Get();
-            else if (!graded && g_presentPlainPixelShader) program = g_presentPlainPixelShader.Get();
-
-            // Vignette and grain pick the matching program rather than being
-            // a branch inside the others, so the common case stays exactly as
-            // small as it was.
-            // The grain's clock. It only has to change: at a few steps a second
-            // it reads as film, and it advances on its own so the picture is
-            // never frozen even if the frame rate is.
+            // The grain's clock. It only has to change: a few steps a second
+            // reads as film, and it advances on its own so the picture is
+            // never frozen even at a low frame rate.
             static float grainClock = 0.0f;
             if (settings.grain > 0.0f)
             {
                 grainClock += 0.017f;
                 if (grainClock > 1000.0f) grainClock -= 1000.0f;
             }
-            const bool fx = settings.vignette > 0.0f || settings.grain > 0.0f;
-            if (fx)
+            const bool cas = shown.sharpen > 0.0f && g_casPixelShader;
+            ID3D11PixelShader* program = g_presentPixelShader.Get();
+            if (cas) program = g_casPixelShader.Get();
+            else if (fxaa) program = g_fxaaPixelShader.Get();
+            else if (!graded && g_presentPlainPixelShader) program = g_presentPlainPixelShader.Get();
+
+            // Vignette and grain pick the matching program rather than being a
+            // branch inside the others, so the common case stays as small as
+            // it was.
+            if (settings.vignette > 0.0f || settings.grain > 0.0f)
             {
                 if (cas && g_casPostPixelShader) program = g_casPostPixelShader.Get();
                 else if (graded && g_presentPostPixelShader) program = g_presentPostPixelShader.Get();
@@ -1629,7 +1642,7 @@ namespace
                 DrawQuad(frame->resource, frame->width, frame->height, 0, 0, float(frame->width), float(frame->height),
                          g_backView.Get(), viewport, program, g_linearSampler.Get(),
                          gamma, grade, shown.sharpen, shown.saturation,
-                         settings.vignette, settings.grain, grainClock, 1.0f);
+                         settings.vignette, settings.grain, grainClock);
             }
         }
         // The menu, the counters and the screenshot key, over the picture.
