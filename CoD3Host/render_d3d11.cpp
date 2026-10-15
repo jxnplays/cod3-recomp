@@ -129,6 +129,7 @@ namespace
     ComPtr<ID3D11PixelShader> g_copyDepthMS[4];      // and of a depth target, its first sample
     ComPtr<ID3D11PixelShader> g_presentPixelShader;  // the frame, linear sampled
     ComPtr<ID3D11PixelShader> g_fxaaPixelShader;
+    ComPtr<ID3D11PixelShader> g_fxaaPostPixelShader;   // FXAA and the post pass together
     ComPtr<ID3D11PixelShader> g_casPixelShader;
     ComPtr<ID3D11PixelShader> g_presentPlainPixelShader;
     ComPtr<ID3D11PixelShader> g_presentPostPixelShader;
@@ -474,7 +475,13 @@ namespace
         // FXAA 3.11, the quality path, on the presented picture: the edges
         // the title's own picture has, softened by the luma along them.
         "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
-        "float4 fxaa(V v) : SV_Target {\n"
+        // A function, not an entry point, because it has to survive the post
+        // pass being switched on. It used to be the entry point itself, and
+        // vignette or grain being on selected a different program that had no
+        // FXAA in it - so a player who had chosen FXAA silently lost it the
+        // moment they used any other part of this page. FXAA came before the
+        // post pass in the chain and nothing after it knew about FXAA.
+        "float3 fxaaResolve(V v) {\n"
         "    float2 uv = v.uv; float2 px = texel.xy;\n"
         "    float3 rgbM = source.Sample(smp, uv).rgb; float lM = luma(rgbM);\n"
         "    float lN = luma(source.Sample(smp, uv + float2(0, -px.y)).rgb), lS = luma(source.Sample(smp, uv + float2(0, px.y)).rgb);\n"
@@ -515,7 +522,9 @@ namespace
         "    float subFinal = (-2.0 * sub + 3.0) * sub * sub; subFinal = subFinal * subFinal * 0.75;\n"
         "    finalOffset = max(finalOffset, subFinal);\n"
         "    float2 finalUv = uv; if (horizontal) finalUv.y += finalOffset * step; else finalUv.x += finalOffset * step;\n"
-        "    return float4(gamma(grade(source.Sample(smp, finalUv).rgb)), 1.0); }\n"
+        "    return source.Sample(smp, finalUv).rgb; }\n"
+        "float4 fxaa(V v) : SV_Target { return float4(gamma(grade(fxaaResolve(v))), 1.0); }\n"
+        "float4 fxaaPost(V v) : SV_Target { return float4(postPass(gamma(grade(fxaaResolve(v))), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
         // The post entry points are last because HLSL needs a thing declared
         // before it is used, and these call grade() and postPass, which are
         // both defined above them but nowhere near where they were written.
@@ -589,6 +598,8 @@ namespace
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_presentPixelShader);
         if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "fxaa", "ps_5_0", "anti aliasing program"))
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_fxaaPixelShader);
+        if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "fxaaPost", "ps_5_0", "anti aliasing program with the post pass"))
+            g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_fxaaPostPixelShader);
         if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "presentPlain", "ps_5_0", "ungraded present program"))
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_presentPlainPixelShader);
         if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "presentPost", "ps_5_0", "graded post program"))
@@ -1592,6 +1603,7 @@ namespace
             if (settings.vignette > 0.0f || settings.grain > 0.0f)
             {
                 if (cas && g_casPostPixelShader) program = g_casPostPixelShader.Get();
+                else if (fxaa && g_fxaaPostPixelShader) program = g_fxaaPostPixelShader.Get();
                 else if (graded && g_presentPostPixelShader) program = g_presentPostPixelShader.Get();
                 else if (!graded && g_presentPlainPostPixelShader) program = g_presentPlainPostPixelShader.Get();
             }
