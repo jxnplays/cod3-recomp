@@ -168,7 +168,10 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
         else if (key == "brightness") v.brightness = float(atof(value.c_str()));
         else if (key == "sharpen") v.sharpen = float(atof(value.c_str()));
         else if (key == "playstation_prompts") v.playstationPrompts = atoi(value.c_str()) != 0;
-            else if (key == "mouse_sensitivity") v.mouseSensitivity = float(atof(value.c_str()));
+            else if (key == "stick_sensitivity") v.stickSensitivity = float(atof(value.c_str()));
+        else if (key == "aim_assist_stick") v.aimAssistStick = atoi(value.c_str()) != 0;
+        else if (key == "aim_assist_mouse") v.aimAssistMouse = atoi(value.c_str()) != 0;
+        else if (key == "mouse_sensitivity") v.mouseSensitivity = float(atof(value.c_str()));
             else if (key == "raw_mouse") v.rawMouse = atoi(value.c_str()) != 0;
             else if (key.compare(0, 4, "key_") == 0)
             {
@@ -180,7 +183,7 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     }
     if (v.renderer < 0 || v.renderer > 2) v.renderer = 0;
     if (v.resolutionWidth < 320 || v.resolutionHeight < 240 || v.resolutionWidth > 16384 || v.resolutionHeight > 16384) { v.resolutionWidth = 0; v.resolutionHeight = 0; }
-    if (v.resolutionScale < 25 || v.resolutionScale > 200) v.resolutionScale = 100;
+    if (v.resolutionScale < 25 || v.resolutionScale > 300) v.resolutionScale = 100;
     if (v.textureFilter < 0 || v.textureFilter > 3) v.textureFilter = 3;
     if (v.anisotropy < 2 || v.anisotropy > 16) v.anisotropy = 16;
     if (v.antialiasing < 0 || v.antialiasing > 5) v.antialiasing = 3;
@@ -198,6 +201,7 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     // The floor is shared with the menu and with ReadMouse; it used to be 0.1,
     // which could not take the edge off a modern mouse at any setting.
     if (!(v.mouseSensitivity >= float(HostLogic::kMinMouseSensitivity) && v.mouseSensitivity <= 10.0f)) v.mouseSensitivity = 1.0f;
+    if (!(v.stickSensitivity >= 0.1f && v.stickSensitivity <= 10.0f)) v.stickSensitivity = 1.0f;
     // Four layouts, 0 to 3. The ini is hand-editable, so an index out of
     // range has to be corrected here rather than trusted.
     if (v.controlLayout < 0 || v.controlLayout > 3) v.controlLayout = 0;
@@ -228,7 +232,7 @@ void Settings::Save()
         fprintf(file, "[graphics]\nrenderer = %d\nresolution = %s\nresolution_scale = %d\ntexture_filter = %d\nanisotropy = %d\nvsync = %d\naspect_mode = %d\nunlock_frame_rate = %d\nantialiasing = %d\ntexture_quality = %d\nfov = %d\nmodel_detail = %d\naim_blur = %d\nconsole_depth = %d\nnative_commands = %d\nwatch_writes = %d\nwindow_mode = %d\nfps_overlay = %d\nstats_overlay = %d\ncontrast = %.3f\nsaturation = %.3f\ntemperature = %.3f\nbrightness = %.3f\nsharpen = %.3f\n",
             v.renderer, resolution, v.resolutionScale, v.textureFilter, v.anisotropy, v.vsync ? 1 : 0, v.aspectMode, v.unlockFrameRate ? 1 : 0, v.antialiasing, v.textureQuality, v.fov, v.modelDetail, v.aimBlur ? 1 : 0, v.consoleDepth ? 1 : 0, v.nativeCommands ? 1 : 0, v.watchWrites ? 1 : 0, v.windowMode, v.fpsOverlay ? 1 : 0, v.statsOverlay ? 1 : 0,
         v.contrast, v.saturation, v.temperature, v.brightness, v.sharpen);
-            fprintf(file, "[game]\naim_assist = %d\ncontroller = %d\ncontrol_layout = %d\nplaystation_prompts = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.controller ? 1 : 0, v.controlLayout,
+            fprintf(file, "[game]\naim_assist = %d\naim_assist_stick = %d\naim_assist_mouse = %d\nstick_sensitivity = %.2f\ncontroller = %d\ncontrol_layout = %d\nplaystation_prompts = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.aimAssistStick ? 1 : 0, v.aimAssistMouse ? 1 : 0, v.stickSensitivity, v.controller ? 1 : 0, v.controlLayout,
         v.playstationPrompts ? 1 : 0, v.mouseSensitivity, v.rawMouse ? 1 : 0);
         fprintf(file, "[keys]\n");
         for (int i = 0; i < ActionCount; i++) fprintf(file, "key_%s = %d\n", ActionKeys[i], v.keys[i]);
@@ -252,7 +256,7 @@ void Settings::Resolution(const Values& values, int& width, int& height)
 void Settings::DrawnSize(const Values& values, int& width, int& height)
 {
     Resolution(values, width, height);
-    const int percent = values.resolutionScale < 25 ? 25 : values.resolutionScale > 200 ? 200 : values.resolutionScale;
+    const int percent = values.resolutionScale < 25 ? 25 : values.resolutionScale > 300 ? 300 : values.resolutionScale;
     width = std::max(320, width * percent / 100);
     height = std::max(240, height * percent / 100);
 }

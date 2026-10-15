@@ -80,7 +80,18 @@ float brightness = 0.0f;
 // Contrast Adaptive Sharpening, 0 off to 1 as strong as the algorithm gets
 // before ringing. Zero means the CAS shader is never selected.
 float sharpen = 0.0f;
-        float mouseSensitivity = 1.0f;   // both axes, 0.1 .. 10
+        float mouseSensitivity = 1.0f;
+
+// The right stick, separately. The mouse fix moved its gain by nearly an order
+// of magnitude; the stick has its own path and its own cap, and the in-game
+// one is low enough that fast turns are not available.
+float stickSensitivity = 1.0f;
+
+// Aim assist is per device. It is the console's own and it belongs to the
+// stick: on a mouse it is actively harmful, because it pulls the crosshair off
+// the target the player is already aiming at.
+bool aimAssistStick = true;
+bool aimAssistMouse = false;   // both axes, 0.1 .. 10
         bool rawMouse = true;            // the mouse's own counts, not the pointer's travel
         int keys[ActionCount] = {};
     };

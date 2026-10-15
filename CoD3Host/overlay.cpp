@@ -293,7 +293,7 @@ namespace
                             if (current == 0) { g_edit.resolutionWidth = 0; g_edit.resolutionHeight = 0; }
                             else if (current <= int(modes.size())) { g_edit.resolutionWidth = modes[size_t(current) - 1].width; g_edit.resolutionHeight = modes[size_t(current) - 1].height; }
                         }
-                        ImGui::SliderInt("Resolution scale", &g_edit.resolutionScale, 25, 200, "%d%%");
+                        ImGui::SliderInt("Resolution scale", &g_edit.resolutionScale, 25, 300, "%d%%");
                         int width, height, drawnWidth, drawnHeight;
                         Settings::Resolution(g_edit, width, height);
                         Settings::DrawnSize(g_edit, drawnWidth, drawnHeight);
@@ -344,7 +344,7 @@ namespace
                     ImGui::Checkbox("Renderer statistics", &g_edit.statsOverlay);
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Colour"))
+                if (ImGui::BeginTabItem("Color"))
                 {
                     // Everything here runs after the frame is drawn and before
                     // gamma. With every slider at its default the pass is the
@@ -352,14 +352,14 @@ namespace
                     // single pixel - that is the property that makes it safe
                     // to ship at all.
                     ImGui::TextUnformatted("Sharpening");
-                    ImGui::SliderFloat("Sharpen", &g_edit.sharpen, 0.0f, 1.0f, g_edit.sharpen == 0.0f ? "Off" : "%.2f");
+                    ImGui::SliderFloat("Sharpen", &g_edit.sharpen, 0.0f, 1.0f, g_edit.sharpen == 0.0f ? "Off (base game)" : "%.2f");
                     ImGui::TextDisabled("Sharpens against the local contrast, so flat areas are left flat. Overrides FXAA, because the two work on edges in opposite directions.");
                     ImGui::Separator();
-                    ImGui::TextUnformatted("Grading");
-                    ImGui::SliderFloat("Brightness", &g_edit.brightness, -0.5f, 0.5f, g_edit.brightness == 0.0f ? "0 (the game's own)" : "%+.3f");
-                    ImGui::SliderFloat("Contrast", &g_edit.contrast, 0.5f, 2.0f, g_edit.contrast == 1.0f ? "1 (the game's own)" : "%.3f");
-                    ImGui::SliderFloat("Saturation", &g_edit.saturation, 0.0f, 2.0f, g_edit.saturation == 1.0f ? "1 (the game's own)" : "%.3f");
-                    ImGui::SliderFloat("Temperature", &g_edit.temperature, -10.0f, 10.0f, g_edit.temperature == 0.0f ? "0 (the game's own)" : "%+.1f");
+                    ImGui::TextUnformatted("Grade");
+                    ImGui::SliderFloat("Brightness", &g_edit.brightness, -0.5f, 0.5f, g_edit.brightness == 0.0f ? "Base game" : "%+.3f");
+                    ImGui::SliderFloat("Contrast", &g_edit.contrast, 0.5f, 2.0f, g_edit.contrast == 1.0f ? "Base game" : "%.3f");
+                    ImGui::SliderFloat("Saturation", &g_edit.saturation, 0.0f, 2.0f, g_edit.saturation == 1.0f ? "Base game" : "%.3f");
+                    ImGui::SliderFloat("Temperature", &g_edit.temperature, -10.0f, 10.0f, g_edit.temperature == 0.0f ? "Base game" : "%+.1f");
                     ImGui::TextDisabled("Applied before the console's own gamma table, so the game still has the last word on the display curve. 0 means the picture is untouched.");
                     ImGui::EndTabItem();
                 }
@@ -371,9 +371,15 @@ namespace
                     ImGui::Checkbox("Raw mouse input", &g_edit.rawMouse);
                     ImGui::SameLine();
                     ImGui::TextDisabled("(the mouse's own movement, without Windows' pointer speed and acceleration)");
-                    ImGui::Checkbox("Aim assist", &g_edit.aimAssist);
+                    ImGui::SliderFloat("Controller sensitivity", &g_edit.stickSensitivity, 0.1f, 10.0f,
+                                     g_edit.stickSensitivity == 1.0f ? "Base game" : "%.2f");
+ImGui::TextDisabled("The right stick, on its own. The console's own setting is capped low and cannot be raised from here.");
+ImGui::Checkbox("Aim assist (controller)", &g_edit.aimAssistStick);
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(the game's own; takes effect after a restart)");
+                    ImGui::TextDisabled("(the game's own; on by default, which is where it belongs)");
+                    ImGui::Checkbox("Aim assist (mouse)", &g_edit.aimAssistMouse);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(off by default: it pulls the crosshair off a target you are already aiming at)");
                     // Aspect: the console's sixteen by nine with black bars, or the window's own
                     // shape so a wider monitor shows more picture. The title is
                     // told the wider mode too, so its field of view widens
@@ -564,6 +570,9 @@ namespace
                     a.playstationPrompts != b.playstationPrompts ||
                     a.aspectMode != b.aspectMode ||
                     a.aimAssist != b.aimAssist ||
+                    a.aimAssistStick != b.aimAssistStick ||
+                    a.aimAssistMouse != b.aimAssistMouse ||
+                    a.stickSensitivity != b.stickSensitivity ||
                     a.mouseSensitivity != b.mouseSensitivity ||
                     a.rawMouse != b.rawMouse ||
                     a.fov != b.fov ||
@@ -642,7 +651,21 @@ namespace
             ImGui::TextDisabled("no pad seen on XInput device 0 - if the pad works in the game but not here, this is the line to read");
         }
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false)) { Overlay::Toggle(); return; }
-        if (open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) { open = false; }
+        // B closes, but not while there is an unapplied edit.
+        //
+        // It used to close unconditionally, and closing discards g_edit - so a
+        // player adjusting a slider with the pad, pressing B to go back, lost
+        // the adjustment with no warning and no way to tell that is what had
+        // happened. Sharpen was the one that got noticed, because it looked
+        // like the feature did nothing rather than like the menu ate it.
+        //
+        // Cancelling is still possible - Apply first, then B, then Close - but
+        // B now says what it is about to do instead of quietly doing it.
+        if (open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))
+        {
+            if (dirty) ImGui::TextDisabled("B would close this and discard the unapplied changes - press Apply first");
+            else open = false;
+        }
     }
         }
         ImGui::End();
