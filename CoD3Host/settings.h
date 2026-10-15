@@ -47,7 +47,16 @@ int aspectMode = 0;
         bool aimBlur = true;          // the title's depth of field while aiming down the sights
         bool consoleDepth = true;     // depth cut to the console's 24 bit float precision (no flickering surfaces; costs with MSAA)
         bool nativeCommands = false;  // the draws' state taken from the game's own D3D calls, the command stream run only for what the GPU still does (docs/native-d3d11-plan.md, N3; experimental, after a restart)
-        bool watchWrites = false;     // still textures and vertex buffers known unchanged by their pages, not hashed every frame (write_watch.h; experimental, after a restart)
+        // On by default now: measured on Saint Lo at COD3_RENDER_STATS=1, this
+        // took the frame from 14.11 ms to 6.88 ms (70.8 -> 145.1 fps) and the
+        // CPU draw path from 9.71 ms to 2.66 ms, because the per-frame index
+        // conversion - 22.9 MB of it, 62% of all CPU draw time - stops
+        // happening for bytes the guest has not written. It was off because
+        // nothing had ever measured it: the reporter that shows the profile
+        // had no caller (see TickStats in render_d3d11.cpp). Verified over a
+        // 210 s soak, 29 frames, 0 guest faults and 0 exceptions, with the
+        // frames checked by eye; see docs/PERFORMANCE.md.
+        bool watchWrites = true;      // still textures and vertex buffers known unchanged by their pages, not hashed every frame (write_watch.h; after a restart)
         int windowMode = 0;           // 0 windowed, 1 borderless full screen
         bool fpsOverlay = false;
         bool statsOverlay = false;    // the renderer's counters over the picture

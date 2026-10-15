@@ -1884,6 +1884,24 @@ void Render::LogNextFrame()
     fflush(stdout);
 }
 
+namespace
+{
+    // The stats line, once a second. RenderStats::Tick prints a line on
+    // every call and has never had a caller, so COD3_RENDER_STATS and
+    // COD3_RENDER_PROFILE both did nothing: there was no instrumentation
+    // at all, which is why the draw path had to be reasoned about rather
+    // than measured. Called at the swap, so it counts a full second's
+    // worth of frames before it speaks.
+    void TickStats()
+    {
+        static uint64_t last = 0;
+        const uint64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
+        if (now - last < 1000000000ull) return;
+        last = uint64_t(now);
+        RenderStats::Tick();
+    }
+}
+
 void Render::Swap(uint32_t frontBufferPhysical, uint32_t width, uint32_t height)
 {
     (void)width; (void)height;
@@ -1904,6 +1922,7 @@ void Render::Swap(uint32_t frontBufferPhysical, uint32_t width, uint32_t height)
     ApplySettings(settings);
     if (RenderResources::BeginFrame(g_frame)) ForgetBindings();   // the targets were made again
     RenderStats::BeginFrame();
+    TickStats();
 }
 
 void Render::SetWindow(void* hwnd, int clientWidth, int clientHeight)
