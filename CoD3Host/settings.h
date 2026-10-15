@@ -80,6 +80,12 @@ float brightness = 0.0f;
 // Contrast Adaptive Sharpening, 0 off to 1 as strong as the algorithm gets
 // before ringing. Zero means the CAS shader is never selected.
 float sharpen = 0.0f;
+
+// Vignette and film grain, applied after the console's own gamma. Both zero by
+// default, and both skipped by a uniform branch, so the untouched case is the
+// same code it was before they existed.
+float vignette = 0.0f;
+float grain = 0.0f;
         float mouseSensitivity = 1.0f;
 
 // The right stick, separately. The mouse fix moved its gain by nearly an order

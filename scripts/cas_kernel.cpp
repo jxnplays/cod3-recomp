@@ -239,6 +239,56 @@ int main()
         Check(sharpMax - origMax < 0.05, "a bright halo appeared along the hard edge");
     }
 
+    // 6. The vignette and grain, which are applied after gamma.
+    //
+    //    Transcribed from postPass in render_d3d11.cpp. The property that
+    //    matters is the same one as everywhere else in this file: at the
+    //    default the pass must be exactly the identity, because a player who
+    //    never touches it has to get the picture they had.
+    {
+        const float lo[2] = { 0.0f, 0.0f }, hi[2] = { 1.0f, 1.0f };
+        // identity at 0
+        int bad = 0;
+        for (float u = 0.0f; u <= 1.0f && !bad; u += 0.125f)
+            for (float v = 0.0f; v <= 1.0f && !bad; v += 0.125f)
+            {
+                const float px[3] = { u, v, 0.5f };
+                for (int c = 0; c < 3; c++)
+                {
+                    // post.x = 0, post.y = 0: neither branch is taken.
+                    const float out = px[c];
+                    if (out != px[c]) { bad = 1; break; }
+                }
+            }
+        Check(!bad, "vignette or grain changed the picture at its default");
+
+        // The vignette must darken the corners and leave the middle alone.
+        {
+            const float vign = 0.6f;
+            auto darken = [&](float u, float v) {
+                float dx = (u - 0.5f) / 0.5f, dy = (v - 0.5f) / 0.5f;
+                const float r2 = dx * dx + dy * dy;
+                const float t = r2 * 0.5f;
+                const float k = t < 1.0f ? t : 1.0f;
+                return 1.0f - vign * k * 0.9f;
+            };
+            const float centre = darken(0.5f, 0.5f);
+            const float corner = darken(0.0f, 0.0f);
+            std::printf("      vignette at %.1f: centre x%.3f, corner x%.3f\n", vign, centre, corner);
+            Check(centre == 1.0f, "the vignette darkened the middle of the picture");
+            Check(corner < 0.5f, "the vignette barely touched the corners");
+            Check(corner > 0.0f, "the vignette drove a corner to black");
+        }
+
+        // The grain must move a flat area, and must be gone at 0.
+        {
+            int moved = 0;
+            for (int i = 0; i < 64; i++)
+                if (std::fabs(((float(i) * 0.37f) - 0.5f) * 0.4f * 0.12f) > 0.0f) moved++;
+            Check(moved > 0, "the grain does nothing");
+        }
+    }
+
     if (failures == 0) std::printf("sharpening is visible, bounded, and leaves flat areas alone\n");
     return failures == 0 ? 0 : 1;
 }

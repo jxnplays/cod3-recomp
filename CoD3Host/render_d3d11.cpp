@@ -131,10 +131,14 @@ namespace
     ComPtr<ID3D11PixelShader> g_fxaaPixelShader;
     ComPtr<ID3D11PixelShader> g_casPixelShader;
     ComPtr<ID3D11PixelShader> g_presentPlainPixelShader;
+    ComPtr<ID3D11PixelShader> g_presentPostPixelShader;
+    ComPtr<ID3D11PixelShader> g_presentPlainPostPixelShader;
+    ComPtr<ID3D11PixelShader> g_casPostPixelShader;
     ComPtr<ID3D11PixelShader> g_flatPixelShader;
     ComPtr<ID3D11PixelShader> g_depthOnlyPixelShader;   // the depth only mode's draws (COD3_DEPTH24)
     ComPtr<ID3D11SamplerState> g_pointSampler, g_linearSampler;
     ComPtr<ID3D11Buffer> g_quadConstants;
+    ComPtr<ID3D11Buffer> g_postConstants;   // vignette, grain and the clock (b1)
     ComPtr<ID3D11Texture1D> g_gammaTexture;           // the display's colour table (Gpu::DisplayGamma)
     ComPtr<ID3D11ShaderResourceView> g_gammaView;
     uint64_t g_gammaVersion = ~0ull;
@@ -302,6 +306,46 @@ namespace
         "Texture1D gammaTable : register(t1);\n"
         "float3 gamma(float3 c) { float3 at = saturate(c) * (255.0 / 256.0) + (0.5 / 256.0);"
         " return float3(gammaTable.SampleLevel(smp, at.r, 0).r, gammaTable.SampleLevel(smp, at.g, 0).g, gammaTable.SampleLevel(smp, at.b, 0).b); }\n"
+
+        // Everything after the console's own display table, because that is
+        // where the picture is finished.
+        //
+        // Vignette and grain belong in display space, not before the gamma:
+        // applied before, the gamma curve would bend them and a corner would
+        // lift again on the way out. Both default to zero, and both are skipped
+        // with a uniform branch rather than folded in, so the untouched case
+        // costs one comparison.
+        //
+        // post.x vignette   0..1
+        // post.y grain      0..1
+        // post.z the clock, for the grain
+        // post.w grain size, so it can be fine or coarse
+        "cbuffer Post : register(b1) { float4 post; };\n"
+        "float3 postPass(float3 c, float2 uv, float2 lo, float2 hi)\n"
+        "{\n"
+        "    float2 d = (uv - (lo + hi) * 0.5) / max((hi - lo) * 0.5, float2(1e-4, 1e-4));\n"
+        "    if (post.x > 0.0)\n"
+        "    {\n"
+        // r2 is 0 at the centre and 2 at a corner, so the factor is halved on the
+        // way in: that puts the CORNER at full strength instead of halfway to
+        // it. At 0.25 the corner only reached 0.73 at a setting of 0.6, which
+        // is a darkening nobody would see - the self-check caught it.
+        "        float r2 = dot(d, d);\n"
+        "        c *= 1.0 - post.x * saturate(r2 * 0.5) * 0.9;\n"
+        "    }\n"
+        "    if (post.y > 0.0)\n"
+        "    {\n"
+        // A hash rather than noise, so it costs nothing to load and needs no
+        // texture. Animated from the clock: static grain reads as dirt on the
+        // screen, moving grain reads as film.
+        "        float2 p = floor(uv / max(post.w, 0.5));\n"
+        "        float h = frac(sin(dot(p, float2(12.9898, 78.233)) + post.z) * 43758.5453);\n"
+        "        c += (h - 0.5) * post.y * 0.12;\n"
+        "    }\n"
+        "    return c;\n"
+        "}\n"
+        "float4 presentPost(V v) : SV_Target { return float4(postPass(gamma(grade(source.Sample(smp, v.uv).rgb)), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
+        "float4 casPost(V v) : SV_Target { return float4(postPass(gamma(grade(sharpened)), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
         "cbuffer Quad : register(b0) { float4 uvRect; float4 texel; };\n"
         "struct V { float4 position : SV_Position; float2 uv : TEXCOORD0; };\n"
         "V vsmain(uint id : SV_VertexID) { V v; float2 t = float2((id << 1) & 2, id & 2);"
@@ -339,6 +383,11 @@ namespace
         // only kind worth relying on for a claim this load bearing.
         "    return (texel.w == 1.0) ? t : saturate(l + (t - l) * texel.w); }\n"
         "float4 present(V v) : SV_Target { return float4(gamma(grade(source.Sample(smp, v.uv).rgb)), 1.0); }\n"
+        // The untouched case: gamma and nothing else. This is what the picture
+        // ran on before any of this existed, and it is still the default, so it
+        // is checked character for character against that version.
+        "float4 presentPlain(V v) : SV_Target { return float4(gamma(source.Sample(smp, v.uv).rgb), 1.0); }\n"
+        "float4 presentPlainPost(V v) : SV_Target { return float4(postPass(gamma(source.Sample(smp, v.uv).rgb), v.uv, uvRect.xy, uvRect.xy + uvRect.zw), 1.0); }\n"
         // The untouched case. This is what the present path did before grading
         // existed, and it is selected whenever every control is at its default,
         // so a player who never opens the Colour page pays for nothing: no
@@ -347,7 +396,7 @@ namespace
         // "At its default" is decided on the host, by a comparison of the four
         // settings against their defaults, so this stays correct even though the
         // saturation identity is a branch inside grade() rather than arithmetic.
-        "float4 presentPlain(V v) : SV_Target { return float4(gamma(source.Sample(smp, v.uv).rgb), 1.0); }\n"
+
         // Contrast-adaptive sharpening, in the shape AMD's CAS uses rather
         // than its exact constants: sharpen against the local contrast, so a
         // flat sky is not ringed and a detailed wall is not overcooked.
@@ -528,6 +577,12 @@ namespace
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_fxaaPixelShader);
         if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "presentPlain", "ps_5_0", "ungraded present program"))
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_presentPlainPixelShader);
+        if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "presentPost", "ps_5_0", "graded post program"))
+            g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_presentPostPixelShader);
+        if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "presentPlainPost", "ps_5_0", "ungraded post program"))
+            g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_presentPlainPostPixelShader);
+        if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "casPost", "ps_5_0", "sharpened post program"))
+            g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_casPostPixelShader);
         if (ComPtr<ID3DBlob> code = CompileBuiltIn(QuadSource, "cas", "ps_5_0", "contrast adaptive sharpening program"))
             g_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &g_casPixelShader);
         if (getenv("COD3_D3DFLAT") != nullptr)
@@ -547,6 +602,7 @@ namespace
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_device->CreateBuffer(&desc, nullptr, &g_quadConstants);
+        if (g_postConstants) { desc.ByteWidth = sizeof(float) * 16; g_device->CreateBuffer(&desc, nullptr, &g_postConstants); }
         // CAS is deliberately NOT in this list. Without it the sharpening
         // setting simply does nothing, rather than the present path failing
         // for everyone over a feature that defaults to off.
@@ -560,7 +616,8 @@ namespace
                   ID3D11RenderTargetView* target, const D3D11_VIEWPORT& viewport,
                   ID3D11PixelShader* program, ID3D11SamplerState* sampler, ID3D11ShaderResourceView* second = nullptr,
                    ID3D11ShaderResourceView* third = nullptr, float sharpenAmount = 0.0f,
-                   float saturationAmount = 1.0f)
+                   float saturationAmount = 1.0f, float vignetteAmount = 0.0f,
+                   float grainAmount = 0.0f, float grainClock = 0.0f, float grainSize = 1.0f)
     {
         if (!BuiltInPrograms()) return;
         // constants[6] and constants[7] carry the sharpening amount and the
@@ -570,6 +627,14 @@ namespace
         const float constants[8] = { x0 / sourceWidth, y0 / sourceHeight, width / sourceWidth, height / sourceHeight,
                                      1.0f / sourceWidth, 1.0f / sourceHeight, sharpenAmount, saturationAmount };
         g_context->UpdateSubresource(g_quadConstants.Get(), 0, nullptr, constants, 0, 0);
+        // b1. Uploaded every draw like b0, which is cheap - four floats - and
+        // it carries the clock, so it cannot be a constant.
+        if (g_postConstants)
+        {
+            const float fx[4] = { vignetteAmount, grainAmount, grainClock, grainSize };
+            g_context->UpdateSubresource(g_postConstants.Get(), 0, nullptr, fx, 0, 0);
+            g_context->PSSetConstantBuffers(1, 1, g_postConstants.GetAddressOf());
+        }
         // Every texture the draws had bound goes, so the target is not
         // among them and the bindings forgotten below are truly gone.
         ID3D11ShaderResourceView* none[32] = {};
@@ -1497,6 +1562,26 @@ namespace
             if (cas) program = g_casPixelShader.Get();
             else if (fxaa) program = g_fxaaPixelShader.Get();
             else if (!graded && g_presentPlainPixelShader) program = g_presentPlainPixelShader.Get();
+
+            // Vignette and grain pick the matching program rather than being
+            // a branch inside the others, so the common case stays exactly as
+            // small as it was.
+            // The grain's clock. It only has to change: at a few steps a second
+            // it reads as film, and it advances on its own so the picture is
+            // never frozen even if the frame rate is.
+            static float grainClock = 0.0f;
+            if (settings.grain > 0.0f)
+            {
+                grainClock += 0.017f;
+                if (grainClock > 1000.0f) grainClock -= 1000.0f;
+            }
+            const bool fx = settings.vignette > 0.0f || settings.grain > 0.0f;
+            if (fx)
+            {
+                if (cas && g_casPostPixelShader) program = g_casPostPixelShader.Get();
+                else if (graded && g_presentPostPixelShader) program = g_presentPostPixelShader.Get();
+                else if (!graded && g_presentPlainPostPixelShader) program = g_presentPlainPostPixelShader.Get();
+            }
             // Said out loud, once, because the alternative is a player who had
             // FXAA selected dragging the sharpen slider and losing their
             // anti-aliasing with nothing on screen to say so. Both work on
@@ -1543,7 +1628,8 @@ namespace
             {
                 DrawQuad(frame->resource, frame->width, frame->height, 0, 0, float(frame->width), float(frame->height),
                          g_backView.Get(), viewport, program, g_linearSampler.Get(),
-                         gamma, grade, shown.sharpen, shown.saturation);
+                         gamma, grade, shown.sharpen, shown.saturation,
+                         settings.vignette, settings.grain, grainClock, 1.0f);
             }
         }
         // The menu, the counters and the screenshot key, over the picture.

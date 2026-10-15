@@ -361,6 +361,11 @@ namespace
                     ImGui::SliderFloat("Saturation", &g_edit.saturation, 0.0f, 2.0f, g_edit.saturation == 1.0f ? "Base game" : "%.3f");
                     ImGui::SliderFloat("Temperature", &g_edit.temperature, -10.0f, 10.0f, g_edit.temperature == 0.0f ? "Base game" : "%+.1f");
                     ImGui::TextDisabled("Applied before the console's own gamma table, so the game still has the last word on the display curve. 0 means the picture is untouched.");
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Film");
+                    ImGui::SliderFloat("Vignette", &g_edit.vignette, 0.0f, 1.0f, g_edit.vignette == 0.0f ? "Off (base game)" : "%.2f");
+                    ImGui::SliderFloat("Grain", &g_edit.grain, 0.0f, 1.0f, g_edit.grain == 0.0f ? "Off (base game)" : "%.2f");
+                    ImGui::TextDisabled("Both after the gamma table, which is where the picture is finished. Vignette darkens the corners only; grain is animated, so it reads as film rather than as dirt on the screen.");
                     ImGui::EndTabItem();
                 }
                 if (ImGui::BeginTabItem("Controls"))
@@ -607,7 +612,9 @@ ImGui::Checkbox("Aim assist (controller)", &g_edit.aimAssistStick);
                     a.brightness != b.brightness ||
                     a.contrast != b.contrast ||
                     a.saturation != b.saturation ||
-                    a.temperature != b.temperature;
+                    a.temperature != b.temperature ||
+                    a.vignette != b.vignette ||
+                    a.grain != b.grain;
                 for (int i = 0; i < Settings::ActionCount; i++)
                     if (a.keys[i] != b.keys[i]) dirty = true;
             }

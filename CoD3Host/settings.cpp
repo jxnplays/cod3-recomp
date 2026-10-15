@@ -166,6 +166,8 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
         else if (key == "saturation") v.saturation = float(atof(value.c_str()));
         else if (key == "temperature") v.temperature = float(atof(value.c_str()));
         else if (key == "brightness") v.brightness = float(atof(value.c_str()));
+        else if (key == "vignette") v.vignette = float(atof(value.c_str()));
+        else if (key == "grain") v.grain = float(atof(value.c_str()));
         else if (key == "sharpen") v.sharpen = float(atof(value.c_str()));
         else if (key == "playstation_prompts") v.playstationPrompts = atoi(value.c_str()) != 0;
             else if (key == "stick_sensitivity") v.stickSensitivity = float(atof(value.c_str()));
@@ -214,6 +216,8 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     if (!(v.temperature >= -10.0f && v.temperature <= 10.0f)) v.temperature = 0.0f;
     if (!(v.brightness >= -0.5f && v.brightness <= 0.5f)) v.brightness = 0.0f;
     if (!(v.sharpen >= 0.0f && v.sharpen <= 1.0f)) v.sharpen = 0.0f;
+    if (!(v.vignette >= 0.0f && v.vignette <= 1.0f)) v.vignette = 0.0f;
+    if (!(v.grain >= 0.0f && v.grain <= 1.0f)) v.grain = 0.0f;
     // A checkbox: anything but 0 is "on", so there is no range to check.
     std::lock_guard<std::mutex> lock(g_mutex);
     g_values = v;
@@ -229,9 +233,9 @@ void Settings::Save()
         char resolution[32];
         if (v.resolutionWidth > 0 && v.resolutionHeight > 0) snprintf(resolution, sizeof(resolution), "%dx%d", v.resolutionWidth, v.resolutionHeight);
         else snprintf(resolution, sizeof(resolution), "desktop");
-        fprintf(file, "[graphics]\nrenderer = %d\nresolution = %s\nresolution_scale = %d\ntexture_filter = %d\nanisotropy = %d\nvsync = %d\naspect_mode = %d\nunlock_frame_rate = %d\nantialiasing = %d\ntexture_quality = %d\nfov = %d\nmodel_detail = %d\naim_blur = %d\nconsole_depth = %d\nnative_commands = %d\nwatch_writes = %d\nwindow_mode = %d\nfps_overlay = %d\nstats_overlay = %d\ncontrast = %.3f\nsaturation = %.3f\ntemperature = %.3f\nbrightness = %.3f\nsharpen = %.3f\n",
+        fprintf(file, "[graphics]\nrenderer = %d\nresolution = %s\nresolution_scale = %d\ntexture_filter = %d\nanisotropy = %d\nvsync = %d\naspect_mode = %d\nunlock_frame_rate = %d\nantialiasing = %d\ntexture_quality = %d\nfov = %d\nmodel_detail = %d\naim_blur = %d\nconsole_depth = %d\nnative_commands = %d\nwatch_writes = %d\nwindow_mode = %d\nfps_overlay = %d\nstats_overlay = %d\ncontrast = %.3f\nsaturation = %.3f\ntemperature = %.3f\nbrightness = %.3f\nsharpen = %.3f\nvignette = %.3f\ngrain = %.3f\n",
             v.renderer, resolution, v.resolutionScale, v.textureFilter, v.anisotropy, v.vsync ? 1 : 0, v.aspectMode, v.unlockFrameRate ? 1 : 0, v.antialiasing, v.textureQuality, v.fov, v.modelDetail, v.aimBlur ? 1 : 0, v.consoleDepth ? 1 : 0, v.nativeCommands ? 1 : 0, v.watchWrites ? 1 : 0, v.windowMode, v.fpsOverlay ? 1 : 0, v.statsOverlay ? 1 : 0,
-        v.contrast, v.saturation, v.temperature, v.brightness, v.sharpen);
+        v.contrast, v.saturation, v.temperature, v.brightness, v.sharpen, v.vignette, v.grain);
             fprintf(file, "[game]\naim_assist = %d\naim_assist_stick = %d\naim_assist_mouse = %d\nstick_sensitivity = %.2f\ncontroller = %d\ncontrol_layout = %d\nplaystation_prompts = %d\nmouse_sensitivity = %.2f\nraw_mouse = %d\n", v.aimAssist ? 1 : 0, v.aimAssistStick ? 1 : 0, v.aimAssistMouse ? 1 : 0, v.stickSensitivity, v.controller ? 1 : 0, v.controlLayout,
         v.playstationPrompts ? 1 : 0, v.mouseSensitivity, v.rawMouse ? 1 : 0);
         fprintf(file, "[keys]\n");
