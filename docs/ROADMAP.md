@@ -156,6 +156,23 @@ brightness alone. Grading raises saturation, moves brightness about mid grey,
 and leaves detail alone - which also confirms grading is not quietly
 sharpening. At zero guest faults throughout.
 
+**Sharpening, verified.** The first kernel shipped and did nothing; it was
+caught on a level by playing, not by measuring. The current one, over 116
+alternating pairs in a single run at sharpen 1.0:
+
+    high frequency energy  +60.91%
+    mean brightness          -0.91%
+    saturation               +2.40%
+
+and the pictures were looked at side by side. Individual grass blades, sandbag
+weave, helmet edges and fence posts all resolve; there is no bright rim on the
+sky/rooftop boundary or on the sandbags, which is what the 0.04 clamp is for.
+
+That is also the first result in this project verified without a person being
+asked to look. `scripts/capture.ps1` boots a level and takes pictures, and
+`scripts/ab.ps1` compares alternating captures as pairs, so a visual claim can
+be settled here rather than handed over.
+
 **Seen, not inferred.** The pictures were looked at. At the defaults the game
 renders correctly - which is the strongest single piece of evidence that the
 10-bit format bug is gone, since that bug darkened everything by four times and
