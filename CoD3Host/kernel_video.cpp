@@ -17,6 +17,7 @@
 // is the largest single piece of work left in this project.
 
 #include "kernel.h"
+#include "cheats.h"
 #include "sampler.h"
 #include "audio_out.h"
 #include "scheduler.h"
@@ -1579,6 +1580,18 @@ bool Kernel::FrameRateUnlocked() { return g_frameRateUnlocked.load(std::memory_o
 void Kernel::QueueConsoleCommand(const std::string& text)
 {
     if (text.empty() || text.size() > 4000) return;
-    std::lock_guard<std::mutex> lock(g_consoleMutex);
-    if (g_consoleQueue.size() < 64) g_consoleQueue.push_back(text);
+    {
+        std::lock_guard<std::mutex> lock(g_consoleMutex);
+        if (g_consoleQueue.size() < 64) g_consoleQueue.push_back(text);
+    }
+    // "spmap <name>" is how every level in this title is loaded - the chapter
+    // select, COD3_MAP, and anything typed into the console all arrive here.
+    // That makes it the one place a level start can be caught, and the
+    // cheats have to be told about it (cheats.h): otherwise god mode in one
+    // level is god mode in the next one, which nobody asked for.
+    //
+    // Only the exact prefix counts, so a cheat command that happened to
+    // contain those letters cannot start a level.
+    if (text.size() > 5 && text.compare(0, 5, "spmap") == 0 && text[5] == ' ')
+        Cheats::LevelStarted();
 }

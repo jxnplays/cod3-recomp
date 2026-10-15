@@ -672,6 +672,68 @@ if (-not $presetRow.Success) {
 }
 
 # ---------------------------------------------------------------------------
+Section 'The cheats must use the names that work'
+
+# This is the third time this has been worth guarding, and the failure is
+# silent: the title accepts the command, does nothing, and there is no output
+# because Com_Printf is compiled out. So nothing in the game says a cheat is
+# not running, and a check that only counted the buttons would stay green.
+#
+#   1. The short names - god, noclip, notarget, setviewpos - are ARGUMENTS in
+#      the table, not commands. Sending them does nothing at all. The commands
+#      are GAME_GODMODEON and GAME_GODMODEOFF and so on.
+#   2. The gate is sv_cheats. Without it the title answers with
+#      GAME_CHEATSNOTENABLED and does nothing, which looks identical to (1)
+#      from the player's side.
+#   3. A level load must turn them off, and every level is loaded through
+#      "spmap ". If that hook goes, god mode survives into the next level.
+
+$cheatsCpp = Join-Path $Src 'cheats.cpp'
+if (-not (Test-Path -LiteralPath $cheatsCpp)) {
+    Fail 'the cheats could not be checked' "the file is missing: $cheatsCpp"
+} else {
+    $cheats = Get-Content -LiteralPath $cheatsCpp -Raw
+
+    foreach ($pair in @(
+            @('GAME_GODMODEON', 'God mode on'), @('GAME_GODMODEOFF', 'God mode off'),
+            @('GAME_NOTARGETON', 'Notarget on'), @('GAME_NOTARGETOFF', 'Notarget off'),
+            @('GAME_NOCLIPON', 'Noclip on'), @('GAME_NOCLIPOFF', 'Noclip off'),
+            @('sv_cheats 1', 'the cheat gate'))) {
+        if ($cheats -notmatch [regex]::Escape($pair[0])) {
+            Fail 'a cheat command is missing or has been renamed' "$($pair[1]): '$($pair[0])' is not in cheats.cpp"
+        }
+    }
+
+    # A bare "god" or "noclip" as a whole quoted string is the mistake. Match
+    # the quotes so the words inside GAME_GODMODEON and the comments do not
+    # trip it.
+    $bare = @()
+    foreach ($bad in 'god', 'noclip', 'notarget', 'invinc', 'setviewpos') {
+        if ($cheats -match ('"' + $bad + '"')) { $bare += $bad }
+    }
+    if ($bare.Count -eq 0) {
+        Pass 'the cheats send the GAME_ prefixed names, not the argument names that do nothing'
+    } else {
+        Fail 'the cheats send an argument name as if it were a command' ("$($bare -join ', ') - these are silently ignored; use the GAME_ prefixed names")
+    }
+
+    if ($cheats -match 'sv_cheats 1' -and $cheats -match 'void Cheats::LevelStarted') {
+        Pass 'the gate is opened and there is a level-start reset'
+    } else {
+        Fail 'the cheat gate or the level-start reset is missing' 'sv_cheats 1 and Cheats::LevelStarted must both be in cheats.cpp'
+    }
+
+    # The reset has to actually be called. A Cheats::LevelStarted nobody calls
+    # is the same as not having it.
+    $kernelVideo = Get-Content (Join-Path $Src 'kernel_video.cpp') -Raw
+    if ($kernelVideo -match 'Cheats::LevelStarted\(\)' -and $kernelVideo -match '"spmap"') {
+        Pass 'a level load calls the cheat reset, on the "spmap " prefix every level comes through'
+    } else {
+        Fail 'the cheat reset is never called' 'QueueConsoleCommand must call Cheats::LevelStarted on the "spmap " prefix'
+    }
+}
+
+# ---------------------------------------------------------------------------
 if (-not $SkipBuild) {
     Section 'Build'
     # Literal roots, not a 'C:\Program Files*\...' wildcard. That form finds

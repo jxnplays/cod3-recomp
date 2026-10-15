@@ -1,5 +1,6 @@
 #include "overlay.h"
 #include "kernel.h"
+#include "cheats.h"
 #include "settings.h"
 #include "logic.h"
 #include "render_stats.h"
@@ -412,7 +413,56 @@ namespace
                     ImGui::TextDisabled("Both after the gamma table, which is where the picture is finished. Vignette darkens the corners only; grain is animated, so it reads as film rather than as dirt on the screen.");
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Controls"))
+                if (ImGui::BeginTabItem("Cheats"))
+    {
+        // The title's own debug commands. Found by scanning guest memory for
+        // the names; see docs/DEV_COMMANDS.md, which records that the first
+        // two answers about them were wrong.
+        //
+        // WHAT IS MEASURED, and what is not:
+        //
+        //   "fog off" was sent into live gameplay and the atmospheric haze
+        //   left the frame - individual houses and rooflines behind the
+        //   barrels went from a grey wash to clearly defined. So the command
+        //   dispatch in this table works, and fog is not behind the gate.
+        //
+        //   The rest are behind sv_cheats, which is now set to 1 the first
+        //   time any of them is switched on. Their individual effects were
+        //   NOT measured: proving god mode needs the player to be shot, and
+        //   proving no clip needs the player to walk into a wall, and this
+        //   harness cannot do either. That is why a human is being asked
+        //   rather than this page claiming it works.
+        //
+        // Every one of these starts off, and a level starting turns them all
+        // off again - see Cheats::LevelStarted.
+        Cheats::State& cheats = Cheats::Get();
+        bool god = cheats.god, noTarget = cheats.noTarget, noClip = cheats.noClip, fogOff = cheats.fogOff;
+        if (ImGui::Checkbox("God mode", &god)) Cheats::SetGod(god);
+        ImGui::SameLine();
+        if (ImGui::Button("All off"))
+        {
+            Cheats::SetGod(false);
+            Cheats::SetNoTarget(false);
+            Cheats::SetNoClip(false);
+            Cheats::SetFogOff(false);
+        }
+        ImGui::Separator();
+        if (ImGui::Checkbox("Enemies ignore you", &noTarget)) Cheats::SetNoTarget(noTarget);
+        if (ImGui::Checkbox("Walk through walls", &noClip)) Cheats::SetNoClip(noClip);
+        ImGui::Separator();
+        if (ImGui::Checkbox("Clear the fog", &fogOff)) Cheats::SetFogOff(fogOff);
+        ImGui::TextDisabled("Measured working: this one was sent into a live level and the haze left the frame.");
+        ImGui::Separator();
+        ImGui::TextUnformatted("Give");
+        if (ImGui::Button("Give ammo")) Cheats::GiveAmmo();
+        ImGui::SameLine();
+        if (ImGui::Button("Give everything")) Cheats::GiveAll();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(not measured: the HUD counter is the only thing that shows it, and it fades)");
+        ImGui::Separator();
+        ImGui::TextDisabled("All off is the state a new level starts in, whatever was on before.");
+    }
+    if (ImGui::BeginTabItem("Controls"))
                 {
                     ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity,
                                              float(HostLogic::kMinMouseSensitivity), 10.0f, "%.2f");
