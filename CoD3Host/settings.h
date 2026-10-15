@@ -81,20 +81,35 @@ bool playstationPrompts = false;
 // is touched. contrast and saturation are multipliers about mid grey and about
 // the pixel's luma; temperature is a warm/cool push in tenths, and brightness
 // is a lift.
-float contrast = 1.0f;
-float saturation = 1.0f;
-float temperature = 0.0f;
+// The Reborn look, not the untouched picture.
+//
+// These six all shipped at the identity - contrast 1, saturation 1,
+// temperature 0, sharpen 0, vignette 0, grain 0 - which meant that the whole
+// grade, verified and measured and working, was invisible on a clean install.
+// Six sliders that all start at zero are six sliders nobody finds. A player
+// who launched this and saw nothing new had been told the truth and also
+// been shown nothing.
+//
+// "Base game" is still one click away in the menu's Look preset and is still
+// exactly the identity pass, so nothing is given up here: the pass remains
+// provably a no-op when every value is at its neutral, and a self-check
+// still proves that. Only the starting point changed.
+//
+// These must stay equal to the Reborn row of the Look preset in overlay.cpp.
+float contrast = 1.06f;
+float saturation = 1.18f;
+float temperature = 1.2f;
 float brightness = 0.0f;
 
 // Contrast Adaptive Sharpening, 0 off to 1 as strong as the algorithm gets
 // before ringing. Zero means the CAS shader is never selected.
-float sharpen = 0.0f;
+float sharpen = 0.35f;
 
 // Vignette and film grain, applied after the console's own gamma. Both zero by
 // default, and both skipped by a uniform branch, so the untouched case is the
 // same code it was before they existed.
-float vignette = 0.0f;
-float grain = 0.0f;
+float vignette = 0.35f;
+float grain = 0.14f;
         float mouseSensitivity = 1.0f;
 
 // The right stick, separately. The mouse fix moved its gain by nearly an order

@@ -619,6 +619,59 @@ if ($broken.Count -eq 0) { Pass 'every relative link in the documentation resolv
 else { Fail 'broken documentation links' ($broken -join '; ') }
 
 # ---------------------------------------------------------------------------
+Section 'The shipped look is the look the menu offers'
+
+# The six grade values exist in two places: the defaults in settings.h, and
+# the "Reborn" row of the Look preset in overlay.cpp. They must agree, or a
+# player who launches the game, opens the menu, picks the preset that is
+# already on and presses Apply gets a different picture than the one they
+# started with - and nothing anywhere would say so.
+#
+# They are read out of both files rather than compared to literals here, so
+# this cannot itself go stale when the values are retuned.
+$settingsH = Get-Content (Join-Path $Src 'settings.h') -Raw
+# The preset row is { name, sharpen, contrast, saturation, temperature,
+# brightness, vignette, grain } - sharpen FIRST, because that is the order the
+# Look struct declares. An earlier version of this check lined the groups up
+# from contrast and so compared every value against its neighbour; it caught
+# that immediately, which is the only reason this check is trusted.
+$presetRow = [regex]::Match($overlay, '\{ "Reborn[^}]*?([0-9.]+)f,\s*([0-9.]+)f,\s*([0-9.]+)f,\s*([0-9.]+)f,\s*([0-9.]+)f,\s*([0-9.]+)f,\s*([0-9.]+)f\s*\}')
+if (-not $presetRow.Success) {
+    Fail 'the Reborn preset could not be read' 'no row matching { "Reborn ... } in overlay.cpp'
+} else {
+    $names = 'sharpen', 'contrast', 'saturation', 'temperature', 'brightness', 'vignette', 'grain'
+    $drift = @()
+    for ($i = 0; $i -lt 7; $i++) {
+        $want = [double]$presetRow.Groups[$i + 1].Value
+        $m = [regex]::Match($settingsH, "float\s+$($names[$i])\s*=\s*(-?[0-9.]+)f\s*;")
+        if (-not $m.Success) {
+            $drift += "$($names[$i]) has no default in settings.h"
+            continue
+        }
+        $have = [double]$m.Groups[1].Value
+        if ([Math]::Abs($have - $want) -gt 0.0001) {
+            $drift += "$($names[$i]) defaults to $have but the preset sets $want"
+        }
+    }
+    if ($drift.Count -eq 0) {
+        Pass 'all seven look defaults are exactly the Reborn preset, so choosing it changes nothing on a fresh install'
+    } else {
+        Fail 'the shipped look and the Reborn preset disagree' ($drift -join '; ')
+    }
+
+    # The Reborn look must also be a real change of picture, not a relabelled
+    # identity: a preset that turns out to equal the base game is the exact
+    # failure this work was meant to stop, wearing a new name.
+    $neutral = @{ contrast = 1.0; saturation = 1.0; temperature = 0.0; brightness = 0.0; vignette = 0.0; grain = 0.0; sharpen = 0.0 }
+    $differs = $false
+    for ($i = 0; $i -lt 7; $i++) {
+        if ([Math]::Abs([double]$presetRow.Groups[$i + 1].Value - $neutral[$names[$i]]) -gt 0.0001) { $differs = $true }
+    }
+    if ($differs) { Pass 'the Reborn preset is not the identity: it actually changes the picture' }
+    else { Fail 'the Reborn preset is the identity' 'every value is neutral, so choosing it would do nothing' }
+}
+
+# ---------------------------------------------------------------------------
 if (-not $SkipBuild) {
     Section 'Build'
     # Literal roots, not a 'C:\Program Files*\...' wildcard. That form finds

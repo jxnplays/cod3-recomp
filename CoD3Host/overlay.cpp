@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -351,6 +352,49 @@ namespace
                     // identity, so this page left alone must not change a
                     // single pixel - that is the property that makes it safe
                     // to ship at all.
+                    //
+                    // That property is also why the remaster was invisible:
+                    // six sliders that all start at zero are six sliders
+                    // nobody finds. One control that sets the lot is the
+                    // difference between a feature that exists and a
+                    // feature that shows.
+                    struct Look { const char* name; float sharpen, contrast, saturation, temperature, brightness, vignette, grain; };
+                    static const Look kLooks[] = {
+                        { "Base game - nothing touched", 1.00f, 1.00f, 1.00f, 0.0f, 0.0f, 0.00f, 0.00f },
+                        // The project's own look. Saturation does most of the
+                        // work: this title came out grey and green, and
+                        // lifting it is most of the reason a remaster of it
+                        // exists. The rest are kept small enough that nothing
+                        // reads as a filter.
+                        { "Reborn - this project's look", 0.35f, 1.06f, 1.18f, 1.2f, 0.0f, 0.35f, 0.14f },
+                    };
+                    constexpr int kLookCount = int(sizeof(kLooks) / sizeof(kLooks[0]));
+                    auto MatchesLook = [](const Settings::Values& v, const Look& l) {
+                        const float e = 0.0005f;
+                        return std::fabs(v.sharpen - l.sharpen) < e && std::fabs(v.contrast - l.contrast) < e
+                            && std::fabs(v.saturation - l.saturation) < e && std::fabs(v.temperature - l.temperature) < e
+                            && std::fabs(v.brightness - l.brightness) < e && std::fabs(v.vignette - l.vignette) < e
+                            && std::fabs(v.grain - l.grain) < e;
+                    };
+                    // -1 reads as Custom: the sliders are off both presets.
+                    int look = -1;
+                    for (int i = 0; i < kLookCount; i++) if (MatchesLook(g_edit, kLooks[i])) { look = i; break; }
+                    const char* lookNames[kLookCount + 1];
+                    for (int i = 0; i < kLookCount; i++) lookNames[i] = kLooks[i].name;
+                    lookNames[kLookCount] = "Custom - the sliders below";
+                    int chosen = look;
+                    if (ImGui::Combo("Look", &chosen, lookNames, kLookCount + 1) && chosen >= 0 && chosen < kLookCount)
+                    {
+                        g_edit.sharpen = kLooks[chosen].sharpen;
+                        g_edit.contrast = kLooks[chosen].contrast;
+                        g_edit.saturation = kLooks[chosen].saturation;
+                        g_edit.temperature = kLooks[chosen].temperature;
+                        g_edit.brightness = kLooks[chosen].brightness;
+                        g_edit.vignette = kLooks[chosen].vignette;
+                        g_edit.grain = kLooks[chosen].grain;
+                    }
+                    ImGui::TextDisabled("Sets every slider on this page at once. Move any one of them and it reads Custom. Nothing is applied until you press Apply.");
+                    ImGui::Separator();
                     ImGui::TextUnformatted("Sharpening");
                     ImGui::SliderFloat("Sharpen", &g_edit.sharpen, 0.0f, 1.0f, g_edit.sharpen == 0.0f ? "Off (base game)" : "%.2f");
                     ImGui::TextDisabled("Sharpens against the local contrast, so flat areas are left flat. Overrides FXAA, because the two work on edges in opposite directions.");
