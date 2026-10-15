@@ -84,6 +84,52 @@ So: no image difference was ever measured, and the case for the default rests
 on the numbers plus a clean soak and an eyeball. A human playing it is still
 worth more than either.
 
+## Where the GPU time goes
+
+`COD3_GPU_DRAWS=1` puts a timestamp after every draw and attributes the gap
+to the draw that follows it. Saint Lo, 691 frames:
+
+    gpu draws: 6.22 ms a frame
+      ps eeb0be199afe, 1800 wide    1.773 ms (28.5%),  114.0 draws a frame
+      resolves                      0.513 ms ( 8.2%),   16.0 draws a frame
+      ps b9de3f0dc996, 1800 wide    0.480 ms ( 7.7%),   25.0 draws a frame
+      ps ff163fc44b58, 1800 wide    0.266 ms ( 4.3%),   26.0 draws a frame
+      ps 92858c0e7692, 1800 wide    0.262 ms ( 4.2%),   23.0 draws a frame
+      ps 3ca30d452af2,  969 wide    0.255 ms ( 4.1%),   16.3 draws a frame
+
+**One shader is 28.5% of the GPU frame.** It is the alpha-tested foliage
+pass: `ps_f539eeb0be199afe.hlsl`, one texture fetch, and then **two
+`discard`s in the same shader** - one from the fetched alpha against the
+program's own threshold, one from the draw's generic alpha test - plus a
+depth write through `Depth20e4`. 114 draws, 15.5 us each.
+
+That is the shape to expect to be slow. Two discards in one shader stops the
+GPU rejecting covered-but-failing pixels early, so the whole shader runs for
+every covered pixel of a large screen area. Foliage covers a lot of screen.
+
+The two discards do not obviously test the same thing - one compares against
+the program's float constants `c[1].x`/`c[1].y`, the other against the draw's
+`flags.z` - so merging them would be a guess, and a wrong guess here is
+geometry that blinks in and out.
+
+`COD3_DUMPHLSL=<dir>` with `COD3_NOSHADERCACHE=1` writes every translated
+program; the report names only the low 48 bits of the hash, so the file is
+found by its tail (`ps_f539eeb0be199afe`, not `ps_eeb0be199afe`).
+
+## What the aim blur costs, measured
+
+`resolves` at 8.2% looked like the depth-of-field pass. It is not:
+
+| | frame | GPU | resolves |
+|---|---|---|---|
+| `COD3_AIMBLUR=1` | 7.15 ms | 6.41 ms | 16 |
+| `COD3_AIMBLUR=0` | 6.99 ms | 6.33 ms | 16 |
+
+0.16 ms, and the resolve count does not move at all, so those 16 resolves are
+the title's own copies and not the blur. Two percent. The setting stays on its
+current default; it is worth knowing the cost is small and not worth knowing
+it is worth nothing.
+
 ## What is left, in order of what the numbers say
 
 1. **1657 texture switches a frame against 928 draws** - about 1.8 binds per
@@ -97,6 +143,11 @@ worth more than either.
 4. **GPU is now the wall.** 6.68 ms of GPU against 2.66 ms of CPU, so from
    here the frame is set by the console's own shaders and resolution. This is
    what SSAO, SMAA and FSR will move.
+5. **The foliage shader, if it can be done safely.** 28.5% of the GPU frame
+   in one program is the whole ballgame. Anything that removes one of the two
+   `discard`s without changing which pixels survive is worth more than every
+   other item here combined. Nothing has been tried, because the two tests
+   are not visibly the same test and guessing wrong makes foliage flicker.
 
 `COD3_RENDER_STATS=1 COD3_RENDER_PROFILE=1 COD3_GPU_PROFILE=1` is the command
 that produces all of the above. It works now.
