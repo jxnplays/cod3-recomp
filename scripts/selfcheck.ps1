@@ -734,6 +734,28 @@ if (-not (Test-Path -LiteralPath $cheatsCpp)) {
 }
 
 # ---------------------------------------------------------------------------
+Section 'Every tab opened is closed'
+
+# An ImGui BeginTabItem pushes an ID that EndTabItem pops. Leaving one open
+# is not a compile error and it is not a crash: ImGui reports "Missing
+# PopID()", and then every widget after it in the window carries the wrong
+# ID. The player sees an error box on one control and finds that the tabs
+# stopped responding - which is what happened on 2026-10-15, when the Cheats
+# tab was added without its EndTabItem.
+#
+# Counting catches it. It cannot catch the reverse mistake - a stray End on its
+# own is a pop with no push, and the count here would be zero either way.
+
+$overlayTabs = Get-Content (Join-Path $Src 'overlay.cpp') -Raw
+$begun = ([regex]::Matches($overlayTabs, 'BeginTabItem\(')).Count
+$ended = ([regex]::Matches($overlayTabs, 'EndTabItem\(\)')).Count
+if ($begun -eq $ended -and $begun -gt 0) {
+    Pass "all $begun ImGui tabs are closed, so no widget after them carries the wrong ID"
+} else {
+    Fail 'an ImGui tab is not closed' "$begun BeginTabItem against $ended EndTabItem - ImGui will say Missing PopID() and the tabs after it stop responding"
+}
+
+# ---------------------------------------------------------------------------
 if (-not $SkipBuild) {
     Section 'Build'
     # Literal roots, not a 'C:\Program Files*\...' wildcard. That form finds

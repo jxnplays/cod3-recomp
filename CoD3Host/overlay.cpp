@@ -461,11 +461,17 @@ namespace
         ImGui::TextDisabled("(not measured: the HUD counter is the only thing that shows it, and it fades)");
         ImGui::Separator();
         ImGui::TextDisabled("All off is the state a new level starts in, whatever was on before.");
+        // Without this the tab's PopID never happens, ImGui says "Missing
+        // PopID()" on the next widget the player touches, and every widget
+        // after it in the window carries the wrong ID - which is why picking
+        // this tab made Controls and Mods stop responding. Every other tab
+        // here closes; this one was left open.
+        ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Controls"))
                 {
                     ImGui::SliderFloat("Mouse sensitivity", &g_edit.mouseSensitivity,
-                                             float(HostLogic::kMinMouseSensitivity), 10.0f, "%.2f");
+                                             float(HostLogic::kMinMouseSensitivity), float(HostLogic::kMaxMouseSensitivity), "%.2f");
                     ImGui::TextDisabled("Both axes alike.");
                     ImGui::Checkbox("Raw mouse input", &g_edit.rawMouse);
                     ImGui::SameLine();
@@ -738,7 +744,7 @@ ImGui::Checkbox("Aim assist (controller)", &g_edit.aimAssistStick);
     {
         const bool pad = GamepadNav::Connected();
         ImGui::SameLine();
-        ImGui::TextDisabled("   Pad: Start = this menu   D-pad = move   A = select   B = back   LB/RB = adjust");
+        ImGui::TextDisabled("   Pad: Start or LB+D-pad up = this menu   D-pad = move   A = select   B = back   LB/RB = adjust");
         if (pad)
         {
             const uint16_t b = GamepadNav::Buttons();
@@ -752,6 +758,18 @@ ImGui::Checkbox("Aim assist (controller)", &g_edit.aimAssistStick);
             ImGui::TextDisabled("no pad seen on XInput device 0 - if the pad works in the game but not here, this is the line to read");
         }
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false)) { Overlay::Toggle(); return; }
+        // LB + D-pad up, as asked for. A chord, so it cannot fire while LB is
+        // being held for something else - LB alone is "adjust" on the tab bar,
+        // and holding it and flicking the stick up is a thing players do
+        // without meaning to. Both are edge-triggered by IsKeyPressed, and the
+        // menu must already be open for this to be reachable at all: a pad that
+        // can open the menu is not one ImGui is polling yet.
+        if (g_open.load() && ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, false)
+            && (ImGui::IsKeyDown(ImGuiKey_GamepadL1) || ImGui::IsKeyDown(ImGuiKey_GamepadR1)))
+        {
+            Overlay::Toggle();
+            return;
+        }
         // B closes, but not while there is an unapplied edit.
         //
         // It used to close unconditionally, and closing discards g_edit - so a

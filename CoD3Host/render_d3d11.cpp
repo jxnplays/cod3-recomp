@@ -627,7 +627,20 @@ namespace
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_device->CreateBuffer(&desc, nullptr, &g_quadConstants);
-        if (g_postConstants) { desc.ByteWidth = sizeof(float) * 16; g_device->CreateBuffer(&desc, nullptr, &g_postConstants); }
+        // Unconditionally, like the one above. This was guarded with
+        // `if (g_postConstants)`, which reads as "if it is not already made"
+        // and is in fact "if it is non-null" - and a ComPtr that has never
+        // been assigned is null. So the buffer was never created, the guard in
+        // DrawQuad never passed, nothing was ever bound at b1, and postPass
+        // read zeroes and took its own early return. Vignette and grain had
+        // therefore never once done anything, in any build, since the day
+        // they were added.
+        //
+        // Sixteen floats, not one: a constant buffer's size is in 16-byte
+        // registers and UpdateSubresource below writes four of them. Four would
+        // also be legal; the headroom costs 48 bytes once.
+        desc.ByteWidth = sizeof(float) * 16;
+        g_device->CreateBuffer(&desc, nullptr, &g_postConstants);
         // CAS is deliberately NOT in this list. Without it the sharpening
         // setting simply does nothing, rather than the present path failing
         // for everyone over a feature that defaults to off.

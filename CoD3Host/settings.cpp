@@ -202,7 +202,7 @@ void Settings::Load(const std::filesystem::path& exeDirectory)
     // and "clipped".
     // The floor is shared with the menu and with ReadMouse; it used to be 0.1,
     // which could not take the edge off a modern mouse at any setting.
-    if (!(v.mouseSensitivity >= float(HostLogic::kMinMouseSensitivity) && v.mouseSensitivity <= 10.0f)) v.mouseSensitivity = 1.0f;
+    if (!(v.mouseSensitivity >= float(HostLogic::kMinMouseSensitivity) && v.mouseSensitivity <= float(HostLogic::kMaxMouseSensitivity))) v.mouseSensitivity = 1.0f;
     if (!(v.stickSensitivity >= 0.1f && v.stickSensitivity <= 10.0f)) v.stickSensitivity = 1.0f;
     // Four layouts, 0 to 3. The ini is hand-editable, so an index out of
     // range has to be corrected here rather than trusted.

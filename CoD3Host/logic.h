@@ -76,6 +76,18 @@ namespace HostLogic
     // validation and ReadMouse; they were three separate copies of the same
     // range and all three have to move together.
     inline constexpr double kMinMouseSensitivity = 0.01;
+
+    // The highest. It was 10, and 10 was reported as "still far too slow" -
+    // which is consistent with the gain below rather than surprising: at 10
+    // the gain is 450*sqrt(10/3) = 821 counts per pixel, and a 1000 dpi mouse
+    // covers 1000 counts per inch, so 10 is still under one screen-width per
+    // 1.2 inches of hand movement. Somebody who wants to flick across a room
+    // needs the headroom, and the curve already grows slowly enough that the
+    // extra range does not make the low end unusable.
+    //
+    // 100 is the top because past that the curve's square root makes the
+    // top of the slider feel no different from the middle of it.
+    inline constexpr double kMaxMouseSensitivity = 100.0;
 }
 
 #endif
