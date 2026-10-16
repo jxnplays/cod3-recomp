@@ -98,6 +98,8 @@ and [Known gaps](#known-gaps) and [STATUS.md](STATUS.md) are the honest sources.
 | **Audio** | XMA decoded through FFmpeg |
 | **Input** | Keyboard, mouse and pad, with controller navigation in the menus |
 | **Settings** | Resolution, filtering, anisotropy, AA, FOV, FPS cap |
+| **Color** | One "Look" preset sets the whole grade; every slider can still be moved on its own |
+| **Cheats** | The title's own `GAME_*` debug commands, from `F11` |
 | **Mods** | 41 of the title's own console variables, from `F11` |
 
 ### What we have verified ourselves
@@ -302,12 +304,13 @@ CoD3.exe --help
 |---|---|
 | `F11` | settings, and the mod menu — both work with a controller |
 | `F12` | screenshot, plus the next two frames' draws to `CoD3.log` |
-| `` ` `` | the title's own console (`spmap forest`, `god`, `noclip`) |
+| `` ` `` | the title's own console (`spmap forest`, `sv_cheats 1`, `GAME_GODMODEON`) |
 | `Escape` | pause |
 
 ### The menus
 
-`F11` opens the settings panel: **Graphics**, **Controls**, and **Mods**.
+`F11` opens the settings panel: **Graphics**, **Color**, **Cheats**,
+**Controls**, and **Mods**.
 
 The **Mods** tab is 41 of the title's own console variables — crosshair, weapon
 model, HUD brightness, compass, objectives, fog, fullbright, clipping planes,
@@ -315,11 +318,43 @@ texture filtering, and the `r_show*` debug set. Each takes effect the moment
 you change it. `docs/cvars.txt` has the full list and `docs/CONSOLE.md`
 explains the mechanism.
 
-What is deliberately **not** in it: god mode, noclip, infinite ammo, give
-weapon, spawnable bots. The title's cvar table holds 188 names and none of
-them sets health, ammo, money, position or a peer player — those need a
-different way into the game, and a menu row that quietly does nothing is
-worse than no row.
+### Cheats
+
+`F11` has a **Cheats** tab, and it works. These are the title's own debug
+commands, which were sitting in guest memory the whole time:
+
+| Menu row | Command | |
+|---|---|---|
+| God mode | `GAME_GODMODEON` / `GAME_GODMODEOFF` | |
+| Enemies ignore you | `GAME_NOTARGETON` / `GAME_NOTARGETOFF` | |
+| Walk through walls | `GAME_NOCLIPON` / `GAME_NOCLIPOFF` | |
+| Clear the fog | `fog off` / `fog on` | measured working |
+| Give ammo / Give everything | `give ammo` / `give all` | |
+
+They are behind the title's own `sv_cheats` gate, which the menu sets to 1 the
+first time you switch one on. All start off, and a level starting turns them
+all off again.
+
+**They were nearly missed twice.** The short names — `god`, `noclip`,
+`notarget` — appear in the same table and are *arguments*, not commands;
+sending them does nothing at all, silently. And the reason was not in that
+table either: it is the string `GAME_CHEATSNOTENABLED`, which is what the
+title prints when it refuses. `docs/DEV_COMMANDS.md` has the addresses and
+the full story, including why the wrong conclusion was written down and
+pushed before it was corrected.
+
+### Not in it
+
+SMAA, TAA and FSR. Ambient occlusion. Shadow quality settings. A skybox or
+day-night cycle. Weather toggles. Weapon inspect animations. Higher internal
+resolution (see below). Multiplayer.
+
+On **resolution scale**: the game renders at **1040×720 at every setting**.
+The control changes the size of the buffer the finished image is blown up
+into, not the resolution the geometry is drawn at, so above 100% it is a pure
+upscale that adds no detail and makes existing edges larger. It is left in
+place because it does no harm at or below 100%, but do not expect supersampling
+from it.
 
 **Controls** drives the whole panel with a controller as well as a mouse:
 D-pad or left stick to move, A to activate, bumpers to switch tabs. Which set

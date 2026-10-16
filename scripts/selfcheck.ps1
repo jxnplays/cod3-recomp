@@ -756,6 +756,67 @@ if ($begun -eq $ended -and $begun -gt 0) {
 }
 
 # ---------------------------------------------------------------------------
+Section 'The README must not contradict the code'
+
+# The README said, until 2026-10-15, that god mode and noclip were
+# "deliberately not in it" - after the Cheats tab had been shipping them for a
+# day - and offered `god` and `noclip` as working console examples, which they
+# are not: those are argument names, and sending them does nothing at all.
+#
+# Documentation going stale after a feature lands is its own failure mode, and
+# nothing else here notices it. The build is green either way.
+
+$readmePath = Join-Path $Root 'README.md'
+if (Test-Path -LiteralPath $readmePath) {
+    $readme = Get-Content -LiteralPath $readmePath -Raw
+    $contradictions = @()
+
+    # Positive assertion, not a scan for denials. The first version of this
+    # check looked for the phrase "not in it ... god mode" and was tested
+    # against the exact sentence it was written for - and MISSED it, because
+    # the README says "**not** in it" with markdown asterisks inside the bold
+    # and the pattern did not allow for them. A check that passes while the
+    # text it was written for sails past is worse than no check, because it
+    # reads as coverage.
+    #
+    # So: if the code sends the command, the README has to name it. That
+    # cannot be phrased around, and it fails for the right reason.
+    foreach ($pair in @(@('GAME_GODMODEON', 'god mode'), @('GAME_NOCLIPON', 'no clip'),
+            @('GAME_NOTARGETON', 'enemies ignoring you'), @('sv_cheats', 'the cheat gate'))) {
+        if ($cheats -match [regex]::Escape($pair[0])) {
+            if ($readme -notmatch [regex]::Escape($pair[0])) {
+                $contradictions += "cheats.cpp sends $($pair[0]) ($($pair[1])) but the README never names it"
+            }
+        }
+    }
+
+    # The argument names must not be offered as commands. They are the exact
+    # mistake this file was pushed for once.
+    foreach ($bad in 'god', 'noclip', 'notarget') {
+        if ($readme -match 'spmap[^)]*\b' + $bad + '\b') {
+            $contradictions += "the README offers '$bad' as a console example; it is an argument name and does nothing"
+        }
+    }
+
+    if ($contradictions.Count -eq 0) {
+        Pass 'the README agrees with the code about the cheats, and does not offer argument names as commands'
+    } else {
+        Fail 'the README contradicts the code' ($contradictions -join '; ')
+    }
+
+    # Resolution scale is the other one worth guarding: it is a pure upscale
+    # above 100% because the title renders at 1040x720 whatever it is set to,
+    # and calling it supersampling anywhere would be a promise it cannot keep.
+    if ($readme -match '(?i)resolution scale' -and $readme -notmatch '1040') {
+        Fail 'the README talks about resolution scale without saying what it does' 'above 100% it is a pure upscale; the title renders at 1040x720 either way'
+    } else {
+        Pass 'the README says what resolution scale actually does'
+    }
+} else {
+    Fail 'the README could not be checked' "missing: $readmePath"
+}
+
+# ---------------------------------------------------------------------------
 if (-not $SkipBuild) {
     Section 'Build'
     # Literal roots, not a 'C:\Program Files*\...' wildcard. That form finds
