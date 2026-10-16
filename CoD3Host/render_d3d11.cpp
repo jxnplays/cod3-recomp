@@ -335,11 +335,29 @@ namespace
         "    }\n"
         "    if (post.y > 0.0)\n"
         "    {\n"
-        // A hash, so it costs no texture and no bandwidth. Animated from the
-        // clock: static grain reads as dirt on the screen, moving grain reads
-        // as film.
-        "        float2 g = floor(uv / max(post.w, 0.5));\n"
-        "        float h = frac(sin(dot(g, float2(12.9898, 78.233)) + post.z) * 43758.5453);\n"
+        // Per PIXEL, which this was not.
+        //
+        // uv runs 0..1 and post.w was 1, so floor(uv / post.w) was (0,0) for
+        // every pixel on the screen. The "grain" was therefore one number
+        // applied to the whole frame - a uniform brightness offset, not noise -
+        // and it changed every frame, because the clock advances per frame.
+        // At 140 fps that is the whole picture stepping 140 times a second:
+        // unplayable, and worse the higher the setting because the amplitude
+        // scales with it. It was invisible for its whole life because the
+        // constant buffer that carries post.y was never bound (see
+        // BuiltInPrograms), so this only ever ran once that was fixed.
+        //
+        // texel is 1/width, 1/height, so uv / texel is the pixel coordinate.
+        // post.w is the grain size in pixels.
+        "        float2 g = floor(uv / (texel * max(post.w, 1.0)));\n"
+        // A hash with no sin() in it. frac(sin(x) * 43758.5453) is the usual
+        // one and it is wrong here: the clock reaches 1000, and sin() of an
+        // argument that large has no fractional bits left in it, so what came
+        // out was banded flat steps rather than noise. The clock goes in
+        // through frac() instead, which keeps it bounded whatever it reaches.
+        "        g = frac(g * float2(0.1031, 0.1030) + post.z);\n"
+        "        g += dot(g, g.yx + 33.33);\n"
+        "        float h = frac((g.x + g.y) * g.x);\n"
         "        v += (h - 0.5) * post.y * 0.12;\n"
         "    }\n"
         "    return v;\n"
@@ -669,6 +687,9 @@ namespace
         // clock, so it cannot be a constant.
         if (g_postConstants)
         {
+            // post.w is the grain cell size in PIXELS, not in uv. It was 1.0,
+            // which against a uv that runs 0..1 meant one cell for the entire
+            // frame; see postPass.
             const float fx[4] = { vignetteAmount, grainAmount, grainClock, 1.0f };
             g_context->UpdateSubresource(g_postConstants.Get(), 0, nullptr, fx, 0, 0);
             g_context->PSSetConstantBuffers(1, 1, g_postConstants.GetAddressOf());
@@ -1595,14 +1616,25 @@ namespace
             }
             const bool graded = shown.contrast != 1.0f || shown.saturation != 1.0f ||
                                 shown.temperature != 0.0f || shown.brightness != 0.0f;
-            // The grain's clock. It only has to change: a few steps a second
-            // reads as film, and it advances on its own so the picture is
-            // never frozen even at a low frame rate.
+            // The grain's clock, in real time.
+            //
+            // It used to advance 0.017 a FRAME, which is a frame at 60 fps and
+            // a 140th of a second at the frame rate this now runs at. So the
+            // grain stepped 140 times a second - a shimmer, not film - and got
+            // faster on exactly the machines that could afford to have it
+            // smooth. The comment above it said "a few steps a second reads as
+            // film", which was true of the 60 fps it was written at and of
+            // nothing else.
+            //
+            // Now it is wall clock, quantised to 24 steps a second. Film grain
+            // is 24 frames a second; matching that is the whole difference
+            // between grain and static.
+            static std::chrono::steady_clock::time_point grainAt = std::chrono::steady_clock::now();
             static float grainClock = 0.0f;
             if (settings.grain > 0.0f)
             {
-                grainClock += 0.017f;
-                if (grainClock > 1000.0f) grainClock -= 1000.0f;
+                const auto now = std::chrono::steady_clock::now();
+                grainClock = float(std::chrono::duration_cast<std::chrono::milliseconds>(now - grainAt).count()) / 1000.0f * 24.0f;
             }
             const bool cas = shown.sharpen > 0.0f && g_casPixelShader;
             ID3D11PixelShader* program = g_presentPixelShader.Get();
